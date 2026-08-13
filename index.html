@@ -492,6 +492,30 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 </head>
 <body>
 
+<!-- ═══════════════════════════════════════════════════════════════
+     AUTH GATE — Supabase Auth. Solo usuarios creados manualmente en
+     el panel de Supabase (Authentication → Users) pueden entrar.
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="auth-gate" style="position:fixed;inset:0;background:#1a1a18;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:16px;padding:32px;max-width:360px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="font-size:32px;margin-bottom:8px">🏗️</div>
+      <div style="font-size:18px;font-weight:700;color:#1a1a18">Loteo Guanaqueros</div>
+      <div style="font-size:13px;color:#6b6a65;margin-top:2px">Inicia sesión para continuar</div>
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="font-size:12px;font-weight:600;color:#6b6a65;display:block;margin-bottom:4px">Correo</label>
+      <input type="email" id="auth-email" autocomplete="username" style="width:100%;padding:10px 12px;border:1px solid rgba(26,26,24,0.22);border-radius:8px;font-size:14px;box-sizing:border-box;margin-bottom:12px" placeholder="tu@correo.com">
+      <label style="font-size:12px;font-weight:600;color:#6b6a65;display:block;margin-bottom:4px">Contraseña</label>
+      <input type="password" id="auth-password" autocomplete="current-password" style="width:100%;padding:10px 12px;border:1px solid rgba(26,26,24,0.22);border-radius:8px;font-size:14px;box-sizing:border-box" placeholder="••••••••">
+    </div>
+    <button id="auth-login-btn" onclick="intentarLogin()" style="width:100%;padding:11px;border:none;border-radius:8px;background:#27500A;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Entrar</button>
+    <div id="auth-error" style="display:none;color:#A32D2D;font-size:12px;margin-top:10px;text-align:center"></div>
+    <div id="auth-loading" style="display:none;color:#6b6a65;font-size:12px;margin-top:10px;text-align:center">Verificando…</div>
+  </div>
+</div>
+<button id="btn-logout" onclick="cerrarSesion()" style="display:none;position:fixed;top:12px;right:12px;z-index:500;background:#fff;border:1px solid rgba(26,26,24,0.22);border-radius:8px;padding:7px 12px;font-size:12px;color:#6b6a65;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.08)"><i class="ti ti-logout" aria-hidden="true"></i> Cerrar sesión</button>
+
 <!-- TABS NAV -->
 <div class="tab-nav">
   <div class="hist-inline">
@@ -1138,6 +1162,134 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+var SUPABASE_URL = 'https://owzxbdkdupehayutunez.supabase.co';
+var SUPABASE_KEY = 'sb_publishable_6y0Tckwi1VRm18i5e0tThw_636_oZdt';
+var sb = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+/* — Login — */
+async function intentarLogin(){
+  var email = document.getElementById('auth-email').value.trim();
+  var pass  = document.getElementById('auth-password').value;
+  var errEl = document.getElementById('auth-error');
+  var loadEl= document.getElementById('auth-loading');
+  var btn   = document.getElementById('auth-login-btn');
+  errEl.style.display='none';
+  if(!email || !pass){ errEl.textContent='Ingresa correo y contraseña.'; errEl.style.display='block'; return; }
+  btn.disabled = true; loadEl.style.display='block';
+  try{
+    var { data, error } = await sb.auth.signInWithPassword({ email: email, password: pass });
+    if(error) throw error;
+    ocultarAuthGate();
+    await cargarLotesCentrosDesdeNube();
+  }catch(e){
+    errEl.textContent = 'Correo o contraseña incorrectos.';
+    errEl.style.display='block';
+  }finally{
+    btn.disabled = false; loadEl.style.display='none';
+  }
+}
+async function cerrarSesion(){
+  if(!confirm('¿Cerrar sesión?')) return;
+  await sb.auth.signOut();
+  location.reload();
+}
+function ocultarAuthGate(){
+  document.getElementById('auth-gate').style.display='none';
+  document.getElementById('btn-logout').style.display='block';
+}
+function mostrarAuthGate(){
+  document.getElementById('auth-gate').style.display='flex';
+  document.getElementById('btn-logout').style.display='none';
+}
+document.addEventListener('DOMContentLoaded', function(){
+  ['auth-email','auth-password'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) el.addEventListener('keydown', function(ev){ if(ev.key==='Enter') intentarLogin(); });
+  });
+});
+
+/* — Verifica sesión existente al cargar la página —
+   OJO: la llamada real a _initAuthCheck() está al final del script
+   siguiente (después de "recalc();"), no acá, porque necesita que
+   ya existan las variables lotes/centros/registros (declaradas más
+   abajo, en otro bloque <script>). */
+async function _initAuthCheck(){
+  if(!sb){ console.error('No se pudo cargar la librería de Supabase.'); return; }
+  var { data } = await sb.auth.getSession();
+  if(data && data.session){
+    ocultarAuthGate();
+    await cargarLotesCentrosDesdeNube();
+  } else {
+    mostrarAuthGate();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOTES + CENTROS DE COSTO (Partida 1 y 2) — persistencia en Supabase
+   Se editan campo por campo directo sobre los arrays en memoria
+   (lotes/centros), así que en vez de sincronizar fila por fila se
+   guarda el estado completo en la nube cada vez que hay un cambio
+   (debounced), igual que el patrón "reemplaza entero" ya usado en
+   Parcela-Chirimoyas para árboles anidados (anexo2).
+   ═══════════════════════════════════════════════════════════════ */
+function _mapLoteRow(row){
+  return { nombre: row.nombre, unidades: row.unidades, m2: Number(row.m2), ufm2: Number(row.ufm2) };
+}
+function _mapCentroRow(row){
+  return { nombre: row.nombre, cls: row.cls, expandido: false,
+    tieneSubcentros: row.tiene_subcentros, subcentros: row.subcentros || [], items: row.items || [] };
+}
+async function cargarLotesCentrosDesdeNube(){
+  if(!sb) return;
+  try{
+    var lotesRes   = await sb.from('loteo_lotes').select('*').order('orden');
+    var centrosRes = await sb.from('loteo_centros').select('*').order('orden');
+    var lotesRows   = lotesRes.data || [];
+    var centrosRows = centrosRes.data || [];
+    if(lotesRows.length===0 && centrosRows.length===0){
+      // Primer uso: no hay nada en la nube todavía — sembramos con
+      // los valores iniciales que trae el HTML.
+      await _guardarLotesCentrosAhora();
+    } else {
+      lotes   = lotesRows.map(_mapLoteRow);
+      centros = centrosRows.map(_mapCentroRow);
+    }
+  }catch(e){
+    console.error('Error cargando lotes/centros desde la nube', e);
+  }
+  history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
+  histIdx = 0;
+  updateHistBtns();
+  recalc();
+}
+async function _guardarLotesCentrosAhora(){
+  if(!sb) return;
+  try{
+    await sb.from('loteo_lotes').delete().gt('id',0);
+    await sb.from('loteo_centros').delete().gt('id',0);
+    if(lotes.length){
+      await sb.from('loteo_lotes').insert(lotes.map(function(l,i){
+        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i };
+      }));
+    }
+    if(centros.length){
+      await sb.from('loteo_centros').insert(centros.map(function(c,i){
+        return { nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros,
+          subcentros:c.subcentros||[], items:c.items||[], orden:i };
+      }));
+    }
+  }catch(e){
+    console.error('Error guardando lotes/centros en la nube', e);
+  }
+}
+var _guardarLCTimer = null;
+function guardarLotesCentrosEnNube(){
+  clearTimeout(_guardarLCTimer);
+  _guardarLCTimer = setTimeout(_guardarLotesCentrosAhora, 900);
+}
+</script>
 <script>
 if(window.pdfjsLib){ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }
 </script>
@@ -1565,6 +1717,7 @@ function snapshot(){
   if(history.length>80)history.shift();
   histIdx=history.length-1;
   updateHistBtns();
+  guardarLotesCentrosEnNube();
 }
 function snap(){snapshot()}
 function undo(){
@@ -1573,6 +1726,7 @@ function undo(){
   const s=JSON.parse(JSON.stringify(history[histIdx]));
   lotes=s.lotes;centros=s.centros;registros=s.registros||[];
   updateHistBtns();recalc();
+  guardarLotesCentrosEnNube();
   // Refrescar panel de registros si está activo
   if(document.getElementById('panel-registro').classList.contains('active')) initRegistroPanel();
 }
@@ -1582,6 +1736,7 @@ function redo(){
   const s=JSON.parse(JSON.stringify(history[histIdx]));
   lotes=s.lotes;centros=s.centros;registros=s.registros||[];
   updateHistBtns();recalc();
+  guardarLotesCentrosEnNube();
   if(document.getElementById('panel-registro').classList.contains('active')) initRegistroPanel();
 }
 function updateHistBtns(){
@@ -1649,6 +1804,7 @@ function addItem(ci){centros[ci].items.push({nombre:'Nuevo ítem',cantidad:1,uni
 function delItem(ci,ii){if(centros[ci].items.length<=1)return;centros[ci].items.splice(ii,1);snap();recalc()}
 function recalc(){updateHeaders();buildMetrics();buildIng();buildCos();buildRes();buildChart()}
 recalc();
+_initAuthCheck();
 
 /* ============================
    PANEL CENTRO DE COSTOS
