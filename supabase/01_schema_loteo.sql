@@ -215,25 +215,37 @@ begin
     'loteo_ordenes_compra','loteo_orden_items'
   ]
   loop
-    execute format('create policy "Usuarios autenticados pueden ver %1$s" on %1$s for select to authenticated using (true)', t);
-    execute format('create policy "Usuarios autenticados pueden crear %1$s" on %1$s for insert to authenticated with check (true)', t);
-    execute format('create policy "Usuarios autenticados pueden editar %1$s" on %1$s for update to authenticated using (true)', t);
-    execute format('create policy "Usuarios autenticados pueden eliminar %1$s" on %1$s for delete to authenticated using (true)', t);
+    if not exists (select 1 from pg_policies where tablename=t and policyname='Usuarios autenticados pueden ver '||t) then
+      execute format('create policy "Usuarios autenticados pueden ver %1$s" on %1$s for select to authenticated using (true)', t);
+      execute format('create policy "Usuarios autenticados pueden crear %1$s" on %1$s for insert to authenticated with check (true)', t);
+      execute format('create policy "Usuarios autenticados pueden editar %1$s" on %1$s for update to authenticated using (true)', t);
+      execute format('create policy "Usuarios autenticados pueden eliminar %1$s" on %1$s for delete to authenticated using (true)', t);
+    end if;
   end loop;
 end $$;
 
 -- ---------------------------------------------------------------------
 -- 9. Habilitar tiempo real
 -- ---------------------------------------------------------------------
-alter publication supabase_realtime add table loteo_lotes;
-alter publication supabase_realtime add table loteo_centros;
-alter publication supabase_realtime add table loteo_registros_gastos;
-alter publication supabase_realtime add table loteo_casas_comerciales;
-alter publication supabase_realtime add table loteo_casas_ejecutivos;
-alter publication supabase_realtime add table loteo_cotizaciones;
-alter publication supabase_realtime add table loteo_cotizacion_items;
-alter publication supabase_realtime add table loteo_ordenes_compra;
-alter publication supabase_realtime add table loteo_orden_items;
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'loteo_lotes','loteo_centros','loteo_registros_gastos',
+    'loteo_casas_comerciales','loteo_casas_ejecutivos',
+    'loteo_cotizaciones','loteo_cotizacion_items',
+    'loteo_ordenes_compra','loteo_orden_items'
+  ]
+  loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname='supabase_realtime' and schemaname='public' and tablename=t
+    ) then
+      execute format('alter publication supabase_realtime add table %I', t);
+    end if;
+  end loop;
+end $$;
 
 -- ---------------------------------------------------------------------
 -- 10. Bucket de Storage para adjuntos (gastos y órdenes de compra)
@@ -242,15 +254,20 @@ insert into storage.buckets (id, name, public)
 values ('loteo-documentos', 'loteo-documentos', false)
 on conflict (id) do nothing;
 
-create policy "Usuarios autenticados pueden ver adjuntos loteo"
-  on storage.objects for select to authenticated
-  using (bucket_id = 'loteo-documentos');
-create policy "Usuarios autenticados pueden subir adjuntos loteo"
-  on storage.objects for insert to authenticated
-  with check (bucket_id = 'loteo-documentos');
-create policy "Usuarios autenticados pueden eliminar adjuntos loteo"
-  on storage.objects for delete to authenticated
-  using (bucket_id = 'loteo-documentos');
+do $$
+begin
+  if not exists (select 1 from pg_policies where tablename='objects' and schemaname='storage' and policyname='Usuarios autenticados pueden ver adjuntos loteo') then
+    create policy "Usuarios autenticados pueden ver adjuntos loteo"
+      on storage.objects for select to authenticated
+      using (bucket_id = 'loteo-documentos');
+    create policy "Usuarios autenticados pueden subir adjuntos loteo"
+      on storage.objects for insert to authenticated
+      with check (bucket_id = 'loteo-documentos');
+    create policy "Usuarios autenticados pueden eliminar adjuntos loteo"
+      on storage.objects for delete to authenticated
+      using (bucket_id = 'loteo-documentos');
+  end if;
+end $$;
 
 -- =====================================================================
 -- Fin del script. Después de correrlo, avísame para seguir con
