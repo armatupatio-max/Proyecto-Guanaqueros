@@ -539,6 +539,10 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 <!-- PANEL FLUJO -->
 <div class="tab-panel active" id="panel-flujo">
 <div class="flujo">
+
+<div class="etapa-tabs" id="etapa-tabs" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
+
+<div id="etapa-detalle-wrap">
 <div class="topbar">
   <div class="hist-btns">
     <button class="hbtn" id="btn-undo" onclick="undo()" disabled title="Deshacer"><i class="ti ti-arrow-left"></i></button>
@@ -561,7 +565,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 <div class="section-hdr ing">
   <i class="ti ti-building-estate" style="font-size:15px;color:#185FA5"></i>
-  <span class="shdr-title ing">Partida 1 — Ingresos · Etapa 1</span>
+  <span class="shdr-title ing">Partida 1 — Ingresos · <span id="etapa-nombre-ing">Etapa 1</span></span>
   <span class="shdr-badge ing">Ingresos</span>
 </div>
 <table class="ft ing">
@@ -575,7 +579,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 <div class="section-hdr cos">
   <i class="ti ti-receipt" style="font-size:15px;color:#A32D2D"></i>
-  <span class="shdr-title cos">Partida 2 — Costos · Etapa 1</span>
+  <span class="shdr-title cos">Partida 2 — Costos · <span id="etapa-nombre-cos">Etapa 1</span></span>
   <span class="shdr-badge cos">Costos</span>
 </div>
 <table class="ft cos" style="table-layout:fixed">
@@ -592,7 +596,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 <div class="section-hdr res">
   <i class="ti ti-chart-bar" style="font-size:15px;color:#3B6D11"></i>
-  <span class="shdr-title res">Resumen del flujo · Etapa 1</span>
+  <span class="shdr-title res">Resumen del flujo · <span id="etapa-nombre-res">Etapa 1</span></span>
   <span class="shdr-badge res">Consolidado</span>
 </div>
 <table class="ft res">
@@ -604,6 +608,10 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 <div class="chart-wrap">
   <canvas id="flujoChart" role="img" aria-label="Ingresos, costos y margen">Ingresos, costos y margen.</canvas>
 </div>
+</div><!-- /etapa-detalle-wrap -->
+
+<div id="consolidado-wrap" style="display:none"></div>
+
 </div>
 </div><!-- /panel-flujo -->
 
@@ -1227,12 +1235,177 @@ async function _initAuthCheck(){
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   ETAPAS — lista dinámica (sin cantidad fija). Cada etapa tiene su
+   propia Partida 1 (lotes) y Partida 2 (centros de costo). Además
+   hay una vista "Consolidado" de solo lectura que suma todas las
+   etapas.
+   ═══════════════════════════════════════════════════════════════ */
+let etapas = [];
+let etapaActivaId = null;
+let vistaConsolidado = false;
+
+function renderEtapaTabs(){
+  const cont = document.getElementById('etapa-tabs');
+  if(!cont) return;
+  const pillBase = 'height:30px;padding:0 14px;border-radius:99px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:6px;border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);color:var(--color-text-secondary)';
+  const pillActive = 'background:#185FA5;border-color:#185FA5;color:#fff';
+  let html = etapas.map(function(e){
+    const activo = !vistaConsolidado && e.id===etapaActivaId;
+    return `<span style="${pillBase}${activo?';'+pillActive:''}" onclick="seleccionarEtapa(${e.id})">
+      ${e.nombre}
+      <i class="ti ti-pencil" style="font-size:11px;opacity:0.6" onclick="event.stopPropagation();renombrarEtapa(${e.id})" title="Renombrar"></i>
+      ${etapas.length>1?`<i class="ti ti-x" style="font-size:11px;opacity:0.6" onclick="event.stopPropagation();eliminarEtapa(${e.id})" title="Eliminar etapa"></i>`:''}
+    </span>`;
+  }).join('');
+  html += `<span style="${pillBase}" onclick="agregarEtapa()"><i class="ti ti-plus" style="font-size:12px"></i> Nueva etapa</span>`;
+  html += `<span style="${pillBase}${vistaConsolidado?';'+pillActive.replace('#185FA5','#6B2FA0').replace('#185FA5','#6B2FA0'):''}${vistaConsolidado?';background:#6B2FA0;border-color:#6B2FA0;color:#fff':''}" onclick="mostrarConsolidado()"><i class="ti ti-chart-arrows-vertical" style="font-size:12px"></i> Consolidado</span>`;
+  cont.innerHTML = html;
+}
+
+async function cargarEtapasDesdeNube(){
+  if(!sb) return;
+  var res = await sb.from('loteo_etapas').select('*').order('orden');
+  var rows = res.data || [];
+  if(rows.length===0){
+    var ins = await sb.from('loteo_etapas').insert({nombre:'Etapa 1', orden:0}).select().single();
+    rows = ins.data ? [ins.data] : [];
+  }
+  etapas = rows.map(function(r){ return {id:r.id, nombre:r.nombre, orden:r.orden}; });
+  if(!etapaActivaId || !etapas.some(function(e){return e.id===etapaActivaId;})){
+    etapaActivaId = etapas[0].id;
+  }
+}
+
+async function seleccionarEtapa(id){
+  clearTimeout(_guardarLCTimer);
+  await _guardarLotesCentrosAhora(); // asegura que lo pendiente de la etapa anterior quede guardado
+  vistaConsolidado = false;
+  etapaActivaId = id;
+  document.getElementById('etapa-detalle-wrap').style.display = '';
+  document.getElementById('consolidado-wrap').style.display = 'none';
+  await _cargarLotesCentrosDeEtapaActiva();
+}
+
+async function agregarEtapa(){
+  var nombre = prompt('Nombre de la nueva etapa:', 'Etapa '+(etapas.length+1));
+  if(!nombre) return;
+  var ins = await sb.from('loteo_etapas').insert({nombre:nombre.trim(), orden:etapas.length}).select().single();
+  if(ins.error){ alert('No se pudo crear la etapa: '+ins.error.message); return; }
+  etapas.push({id:ins.data.id, nombre:ins.data.nombre, orden:ins.data.orden});
+  lotes = []; centros = [];
+  await seleccionarEtapa(ins.data.id);
+}
+
+async function renombrarEtapa(id){
+  var etapa = etapas.find(function(e){return e.id===id;});
+  if(!etapa) return;
+  var nombre = prompt('Nuevo nombre para la etapa:', etapa.nombre);
+  if(!nombre || nombre.trim()===etapa.nombre) return;
+  etapa.nombre = nombre.trim();
+  await sb.from('loteo_etapas').update({nombre:etapa.nombre}).eq('id', id);
+  renderEtapaTabs();
+  actualizarNombresEtapaEnHeaders();
+}
+
+async function eliminarEtapa(id){
+  if(etapas.length<=1) return;
+  if(!confirm('¿Eliminar esta etapa? Se borran también sus lotes y centros de costo.')) return;
+  await sb.from('loteo_etapas').delete().eq('id', id);
+  etapas = etapas.filter(function(e){return e.id!==id;});
+  if(etapaActivaId===id){
+    await seleccionarEtapa(etapas[0].id);
+  } else {
+    renderEtapaTabs();
+  }
+}
+
+function actualizarNombresEtapaEnHeaders(){
+  var etapa = etapas.find(function(e){return e.id===etapaActivaId;});
+  var nombre = etapa ? etapa.nombre : '';
+  ['etapa-nombre-ing','etapa-nombre-cos','etapa-nombre-res'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) el.textContent = nombre;
+  });
+}
+
+async function _cargarLotesCentrosDeEtapaActiva(){
+  var lotesRes   = await sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden');
+  var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden');
+  lotes   = (lotesRes.data||[]).map(_mapLoteRow);
+  centros = (centrosRes.data||[]).map(_mapCentroRow);
+  history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
+  histIdx = 0;
+  updateHistBtns();
+  renderEtapaTabs();
+  actualizarNombresEtapaEnHeaders();
+  recalc();
+}
+
+async function mostrarConsolidado(){
+  clearTimeout(_guardarLCTimer);
+  await _guardarLotesCentrosAhora();
+  vistaConsolidado = true;
+  renderEtapaTabs();
+  document.getElementById('etapa-detalle-wrap').style.display = 'none';
+  var wrap = document.getElementById('consolidado-wrap');
+  wrap.style.display = '';
+  wrap.innerHTML = '<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">Cargando…</div>';
+
+  var lotesRes   = await sb.from('loteo_lotes').select('*');
+  var centrosRes = await sb.from('loteo_centros').select('*');
+  var lotesRows   = lotesRes.data || [];
+  var centrosRows = centrosRes.data || [];
+
+  var filas = etapas.map(function(e){
+    var lotesE   = lotesRows.filter(function(r){return r.etapa_id===e.id;}).map(_mapLoteRow);
+    var centrosE = centrosRows.filter(function(r){return r.etapa_id===e.id;}).map(_mapCentroRow);
+    var ing = lotesE.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
+    var cos = centrosE.reduce(function(a,c){return a+calcCentro(c);},0);
+    return { nombre:e.nombre, ing:ing, cos:cos, mar:ing-cos };
+  });
+  var totIng = filas.reduce(function(a,f){return a+f.ing;},0);
+  var totCos = filas.reduce(function(a,f){return a+f.cos;},0);
+  var totMar = totIng-totCos;
+
+  var rows = filas.map(function(f){
+    var pct = totIng>0 ? (f.mar/totIng*100) : 0;
+    return `<tr>
+      <td style="font-weight:500">${f.nombre}</td>
+      <td>${fval(f.ing)}</td>
+      <td>${fval(f.cos)}</td>
+      <td class="${f.mar>=0?'pos':'neg'}">${fval(f.mar)}</td>
+      <td class="muted">${fpct(pct)}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="section-hdr res">
+      <i class="ti ti-chart-arrows-vertical" style="font-size:15px;color:#6B2FA0"></i>
+      <span class="shdr-title" style="color:#4A1E72">Flujo consolidado — todas las etapas</span>
+      <span class="shdr-badge" style="background:#6B2FA0;color:#fff">Consolidado</span>
+    </div>
+    <table class="ft" style="border:0.5px solid #D9C5EE">
+      <thead><tr style="background:#F4EEF9;color:#4A1E72">
+        <th style="text-align:left">Etapa</th><th>Ingresos</th><th>Costos</th><th>Margen</th><th>% sobre ingresos</th>
+      </tr></thead>
+      <tbody>${rows}
+        <tr class="total-row" style="background:#F4EEF9;color:#4A1E72">
+          <td>Total proyecto</td><td>${fval(totIng)}</td><td>${fval(totCos)}</td>
+          <td class="${totMar>=0?'pos':'neg'}">${fval(totMar)}</td>
+          <td>${totIng>0?fpct(totMar/totIng*100):'—'}</td>
+        </tr>
+      </tbody>
+    </table>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    LOTES + CENTROS DE COSTO (Partida 1 y 2) — persistencia en Supabase
    Se editan campo por campo directo sobre los arrays en memoria
    (lotes/centros), así que en vez de sincronizar fila por fila se
    guarda el estado completo en la nube cada vez que hay un cambio
    (debounced), igual que el patrón "reemplaza entero" ya usado en
-   Parcela-Chirimoyas para árboles anidados (anexo2).
+   Parcela-Chirimoyas para árboles anidados (anexo2). Todo queda
+   acotado a la etapa activa (etapaActivaId).
    ═══════════════════════════════════════════════════════════════ */
 function _mapLoteRow(row){
   return { nombre: row.nombre, unidades: row.unidades, m2: Number(row.m2), ufm2: Number(row.ufm2) };
@@ -1244,13 +1417,16 @@ function _mapCentroRow(row){
 async function cargarLotesCentrosDesdeNube(){
   if(!sb) return;
   try{
-    var lotesRes   = await sb.from('loteo_lotes').select('*').order('orden');
-    var centrosRes = await sb.from('loteo_centros').select('*').order('orden');
+    await cargarEtapasDesdeNube();
+    var lotesRes   = await sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden');
+    var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden');
     var lotesRows   = lotesRes.data || [];
     var centrosRows = centrosRes.data || [];
-    if(lotesRows.length===0 && centrosRows.length===0){
+    var totalRes = await sb.from('loteo_lotes').select('id', {count:'exact', head:true});
+    var totalRowsCount = totalRes.count || 0;
+    if(lotesRows.length===0 && centrosRows.length===0 && totalRowsCount===0){
       // Primer uso: no hay nada en la nube todavía — sembramos con
-      // los valores iniciales que trae el HTML.
+      // los valores iniciales que trae el HTML, en la primera etapa.
       await _guardarLotesCentrosAhora();
     } else {
       lotes   = lotesRows.map(_mapLoteRow);
@@ -1262,22 +1438,24 @@ async function cargarLotesCentrosDesdeNube(){
   history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
   histIdx = 0;
   updateHistBtns();
+  renderEtapaTabs();
+  actualizarNombresEtapaEnHeaders();
   recalc();
 }
 async function _guardarLotesCentrosAhora(){
-  if(!sb) return;
+  if(!sb || !etapaActivaId) return;
   try{
-    await sb.from('loteo_lotes').delete().gt('id',0);
-    await sb.from('loteo_centros').delete().gt('id',0);
+    await sb.from('loteo_lotes').delete().eq('etapa_id', etapaActivaId);
+    await sb.from('loteo_centros').delete().eq('etapa_id', etapaActivaId);
     if(lotes.length){
       await sb.from('loteo_lotes').insert(lotes.map(function(l,i){
-        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i };
+        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i, etapa_id:etapaActivaId };
       }));
     }
     if(centros.length){
       await sb.from('loteo_centros').insert(centros.map(function(c,i){
         return { nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros,
-          subcentros:c.subcentros||[], items:c.items||[], orden:i };
+          subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaActivaId };
       }));
     }
   }catch(e){
