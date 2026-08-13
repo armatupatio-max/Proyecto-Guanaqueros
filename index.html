@@ -1496,7 +1496,7 @@ async function subirAdjuntoStorage(file, regId){
   return path;
 }
 async function obtenerUrlAdjunto(path){
-  var res = await sb.storage.from('loteo-documentos').createSignedUrl(path, 60);
+  var res = await sb.storage.from('loteo-documentos').createSignedUrl(path, 3600);
   return res.data ? res.data.signedUrl : null;
 }
 
@@ -1549,6 +1549,46 @@ async function cargarCotizacionesDesdeNube(){
     if(abiertasIds.indexOf(c.id)>=0) cot._open=true;
     return cot;
   });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ÓRDENES DE COMPRA — persistencia en Supabase, acotadas por etapa
+   El archivo fuente (Excel/PDF/imagen) se sube al bucket
+   "loteo-documentos"; al cargar desde la nube se resuelve una URL
+   firmada y se guarda en "archivo.data" — mismo nombre de campo que
+   usaba el dataURL local, así el resto del código (vista previa,
+   miniaturas, generación de PDF) sigue funcionando sin cambios.
+   ═══════════════════════════════════════════════════════════════ */
+function _mapOrdenRow(row, itemsRows){
+  return { id:row.id, numero:row.numero, fecha:row.fecha, casa:row.casa, ejecutivo:row.ejecutivo,
+    estado:row.estado, pago:row.pago, entrega:row.entrega, lugar:row.lugar, nota:row.nota,
+    cotRef:row.cot_ref,
+    archivo: row.archivo_path ? { nombre:row.archivo_nombre, tipo:row.archivo_tipo, path:row.archivo_path, data:null } : null,
+    items: itemsRows.sort(function(a,b){return (a.orden||0)-(b.orden||0);}).map(function(it){
+      return { desc:it.desc_item, und:it.und, cantidad:Number(it.cantidad), precioUnit:Number(it.precio_unit) };
+    }), _open:false };
+}
+async function cargarOrdenesDesdeNube(){
+  if(!sb || !etapaActivaId){ ordenesCompra=[]; return; }
+  var abiertasIds = ordenesCompra.filter(function(o){return o._open;}).map(function(o){return o.id;});
+  var ocRes = await sb.from('loteo_ordenes_compra').select('*').eq('etapa_id', etapaActivaId).order('fecha',{ascending:false});
+  var ocRows = ocRes.data || [];
+  var ids = ocRows.map(function(o){return o.id;});
+  var itemsRows = [];
+  if(ids.length){
+    var itemsRes = await sb.from('loteo_orden_items').select('*').in('orden_id', ids);
+    itemsRows = itemsRes.data || [];
+  }
+  ordenesCompra = ocRows.map(function(o){
+    var oc=_mapOrdenRow(o, itemsRows.filter(function(it){return it.orden_id===o.id;}));
+    if(abiertasIds.indexOf(o.id)>=0) oc._open=true;
+    return oc;
+  });
+  for(const oc of ordenesCompra){
+    if(oc.archivo && oc.archivo.path){
+      oc.archivo.data = await obtenerUrlAdjunto(oc.archivo.path);
+    }
+  }
 }
 </script>
 <script>
@@ -3189,7 +3229,9 @@ let ocArchivoTemp = null;  // {nombre, data, tipo}
 
 function nextOCNum(){ return 'OC-'+String(ordenesCompra.length+1).padStart(3,'0'); }
 
-function initOCPanel(){
+async function initOCPanel(){
+  await cargarCasasDesdeNube();
+  await cargarOrdenesDesdeNube();
   renderOCSummary();
   renderOrdenesCompra();
   poblarFiltroOCCasa();
@@ -3508,7 +3550,7 @@ function procesarArchivoOC(file){
   // Guardar archivo (base64) para adjuntarlo a la OC
   const readerB64=new FileReader();
   readerB64.onload=e=>{
-    ocArchivoTemp={nombre:file.name,data:e.target.result,tipo:ext||(file.type.split('/')[1]||'')};
+    ocArchivoTemp={nombre:file.name,data:e.target.result,tipo:ext||(file.type.split('/')[1]||''),_file:file};
     renderOCUploadedFile();
     if(esImg){
       extraerDesdeImagen(ocArchivoTemp.data, file.name);
@@ -4053,7 +4095,7 @@ function eliminarFilaOCItem(i){
   renderOCItemsEdit();
 }
 
-function guardarOC(){
+async function guardarOC(){
   const numero=document.getElementById('oc-numero').value.trim();
   if(!numero){
     const el=document.getElementById('oc-numero');
@@ -4061,37 +4103,83 @@ function guardarOC(){
     setTimeout(()=>{el.style.borderColor='';},1500);
     return;
   }
-  const oc={
-    numero,
-    fecha:document.getElementById('oc-fecha').value||todayISO(),
-    casa:document.getElementById('oc-casa').value.trim(),
-    ejecutivo:document.getElementById('oc-ejecutivo').value.trim(),
-    estado:document.getElementById('oc-estado').value,
-    pago:document.getElementById('oc-pago').value,
-    entrega:document.getElementById('oc-entrega').value.trim(),
-    lugar:document.getElementById('oc-lugar').value.trim(),
-    nota:document.getElementById('oc-nota').value.trim(),
-    items:ocItemsTemp.map(it=>Object.assign({},it)),
-    archivo:ocArchivoTemp?Object.assign({},ocArchivoTemp):null,
-    cotRef:ocItemsTemp._cotRef||null,
-    _open:true
-  };
-  if(editandoOCIdx!==null){
-    oc._open=ordenesCompra[editandoOCIdx]._open;
-    ordenesCompra[editandoOCIdx]=oc;
-  } else {
-    ordenesCompra.push(oc);
+  const saveBtn=document.querySelector('#oc-modal-overlay .btn-save');
+  if(saveBtn) saveBtn.disabled=true;
+  try{
+    const campos={
+      numero,
+      fecha:document.getElementById('oc-fecha').value||todayISO(),
+      casa:document.getElementById('oc-casa').value.trim(),
+      ejecutivo:document.getElementById('oc-ejecutivo').value.trim(),
+      estado:document.getElementById('oc-estado').value,
+      pago:document.getElementById('oc-pago').value,
+      entrega:document.getElementById('oc-entrega').value.trim(),
+      lugar:document.getElementById('oc-lugar').value.trim(),
+      nota:document.getElementById('oc-nota').value.trim(),
+      etapa_id:etapaActivaId
+    };
+
+    // Archivo: solo se toca si el usuario seleccionó uno nuevo o lo quitó
+    let ocIdActual=editandoOCIdx!==null?ordenesCompra[editandoOCIdx].id:null;
+    let archivoPrevio=editandoOCIdx!==null?ordenesCompra[editandoOCIdx].archivo:null;
+    if(ocArchivoTemp && ocArchivoTemp._file){
+      const path='oc/'+etapaActivaId+'/'+(ocIdActual||'nueva')+'/'+Date.now()+'_'+ocArchivoTemp._file.name;
+      const up=await sb.storage.from('loteo-documentos').upload(path, ocArchivoTemp._file);
+      if(up.error) throw up.error;
+      campos.archivo_nombre=ocArchivoTemp.nombre;
+      campos.archivo_tipo=ocArchivoTemp.tipo;
+      campos.archivo_path=path;
+      if(archivoPrevio && archivoPrevio.path) await sb.storage.from('loteo-documentos').remove([archivoPrevio.path]);
+    } else if(!ocArchivoTemp && archivoPrevio){
+      campos.archivo_nombre=null; campos.archivo_tipo=null; campos.archivo_path=null;
+      if(archivoPrevio.path) await sb.storage.from('loteo-documentos').remove([archivoPrevio.path]);
+    }
+
+    let ocId;
+    if(editandoOCIdx!==null){
+      ocId=ocIdActual;
+      const upd=await sb.from('loteo_ordenes_compra').update(campos).eq('id',ocId);
+      if(upd.error) throw upd.error;
+    } else {
+      const ins=await sb.from('loteo_ordenes_compra').insert(campos).select().single();
+      if(ins.error) throw ins.error;
+      ocId=ins.data.id;
+    }
+
+    await sb.from('loteo_orden_items').delete().eq('orden_id',ocId);
+    const items=ocItemsTemp.map(function(it,i){
+      return { orden_id:ocId, desc_item:it.desc, und:it.und, cantidad:it.cantidad||0, precio_unit:it.precioUnit||0, orden:i };
+    });
+    if(items.length){
+      const insItems=await sb.from('loteo_orden_items').insert(items);
+      if(insItems.error) throw insItems.error;
+    }
+
+    await cargarOrdenesDesdeNube();
+    cerrarModalOC();
+    renderOrdenesCompra();
+    renderOCSummary();
+    poblarFiltroOCCasa();
+  }catch(e){
+    alert('No se pudo guardar la orden de compra: '+e.message);
+  }finally{
+    if(saveBtn) saveBtn.disabled=false;
   }
-  cerrarModalOC();
-  renderOrdenesCompra();
-  renderOCSummary();
-  poblarFiltroOCCasa();
 }
 
 function editarOC(idx){ abrirModalOC(idx); }
 
-function eliminarOC(idx){
+async function eliminarOC(idx){
   if(!confirm('¿Eliminar esta orden de compra?')) return;
+  const oc=ordenesCompra[idx];
+  try{
+    if(oc.archivo && oc.archivo.path) await sb.storage.from('loteo-documentos').remove([oc.archivo.path]);
+    const del=await sb.from('loteo_ordenes_compra').delete().eq('id',oc.id);
+    if(del.error) throw del.error;
+  }catch(e){
+    alert('No se pudo eliminar la orden de compra: '+e.message);
+    return;
+  }
   ordenesCompra.splice(idx,1);
   renderOrdenesCompra();
   renderOCSummary();
