@@ -1333,12 +1333,14 @@ async function _cargarLotesCentrosDeEtapaActiva(){
   var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden');
   lotes   = (lotesRes.data||[]).map(_mapLoteRow);
   centros = (centrosRes.data||[]).map(_mapCentroRow);
+  await cargarRegistrosDesdeNube();
   history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
   histIdx = 0;
   updateHistBtns();
   renderEtapaTabs();
   actualizarNombresEtapaEnHeaders();
   recalc();
+  if(document.getElementById('panel-registro').classList.contains('active')) initRegistroPanel();
 }
 
 async function mostrarConsolidado(){
@@ -1435,6 +1437,7 @@ async function cargarLotesCentrosDesdeNube(){
   }catch(e){
     console.error('Error cargando lotes/centros desde la nube', e);
   }
+  await cargarRegistrosDesdeNube();
   history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
   histIdx = 0;
   updateHistBtns();
@@ -1466,6 +1469,35 @@ var _guardarLCTimer = null;
 function guardarLotesCentrosEnNube(){
   clearTimeout(_guardarLCTimer);
   _guardarLCTimer = setTimeout(_guardarLotesCentrosAhora, 900);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REGISTRO DE GASTOS — persistencia en Supabase
+   A diferencia de lotes/centros, cada gasto tiene un botón de
+   guardado explícito en un modal, así que se sincroniza fila por
+   fila (insert/update/delete), no como snapshot completo. Los
+   adjuntos van al bucket "loteo-documentos" en vez de guardarse
+   como base64.
+   ═══════════════════════════════════════════════════════════════ */
+function _mapRegistroRow(row){
+  return { id:row.id, fecha:row.fecha, tipoDoc:row.tipo_doc, centro:row.centro,
+    subcentro:row.subcentro, desglose:row.desglose, monto:Number(row.monto),
+    formaPago:row.forma_pago, nota:row.nota, adjuntos: row.adjuntos || [] };
+}
+async function cargarRegistrosDesdeNube(){
+  if(!sb || !etapaActivaId){ registros=[]; return; }
+  var res = await sb.from('loteo_registros_gastos').select('*').eq('etapa_id', etapaActivaId).order('fecha',{ascending:false});
+  registros = (res.data||[]).map(_mapRegistroRow);
+}
+async function subirAdjuntoStorage(file, regId){
+  var path = 'gastos/'+etapaActivaId+'/'+regId+'/'+Date.now()+'_'+file.name;
+  var up = await sb.storage.from('loteo-documentos').upload(path, file);
+  if(up.error) throw up.error;
+  return path;
+}
+async function obtenerUrlAdjunto(path){
+  var res = await sb.storage.from('loteo-documentos').createSignedUrl(path, 60);
+  return res.data ? res.data.signedUrl : null;
 }
 </script>
 <script>
@@ -2128,23 +2160,22 @@ function quitarAdj(i){
 function onAdjFileChange(event){
   const files=[...event.target.files];
   files.forEach(file=>{
-    const reader=new FileReader();
-    reader.onload=e=>{
-      const nombreBase=file.name.replace(/\.[^.]+$/,''); // sin extensión como default
-      adjuntosTemp.push({nombre:nombreBase,nombreOrig:file.name,data:e.target.result});
-      renderAdjList();
-    };
-    reader.readAsDataURL(file);
+    const nombreBase=file.name.replace(/\.[^.]+$/,''); // sin extensión como default
+    adjuntosTemp.push({nombre:nombreBase,nombreOrig:file.name,_file:file});
   });
+  renderAdjList();
   event.target.value=''; // allow re-adding same file
 }
 
-function descargarAdj(regIdx,adjIdx){
+async function descargarAdj(regIdx,adjIdx){
   const a=registros[regIdx].adjuntos[adjIdx];
-  if(!a||!a.data)return;
+  if(!a||!a.path)return;
+  const url=await obtenerUrlAdjunto(a.path);
+  if(!url){ alert('No se pudo generar el link de descarga.'); return; }
   const link=document.createElement('a');
-  link.href=a.data;
+  link.href=url;
   link.download=a.nombre||a.nombreOrig;
+  link.target='_blank';
   link.click();
 }
 
@@ -2254,7 +2285,7 @@ function onSubcentroChange(ci){
   }
 }
 
-function guardarGasto(){
+async function guardarGasto(){
   const fecha=document.getElementById('g-fecha').value||todayISO();
   const tipoDoc=document.getElementById('g-tipo-doc').value;
   const centro=document.getElementById('g-centro').value;
@@ -2281,30 +2312,64 @@ function guardarGasto(){
     return;
   }
 
-  const reg={fecha,tipoDoc,centro,subcentro,desglose,monto,formaPago,nota,adjuntos:[...adjuntosTemp]};
-  if(editandoIdx!==null){
-    registros[editandoIdx]=reg;
-  } else {
-    registros.push(reg);
-  }
-  snap(); // guarda en historial para poder deshacer
+  const saveBtn=document.querySelector('#modal-overlay .btn-save');
+  if(saveBtn) saveBtn.disabled=true;
+  try{
+    const campos={ fecha, tipo_doc:tipoDoc, centro, subcentro, desglose, monto, forma_pago:formaPago, nota, etapa_id:etapaActivaId };
+    let regId;
+    if(editandoIdx!==null){
+      regId=registros[editandoIdx].id;
+      const upd=await sb.from('loteo_registros_gastos').update(campos).eq('id',regId);
+      if(upd.error) throw upd.error;
+    } else {
+      const ins=await sb.from('loteo_registros_gastos').insert(campos).select().single();
+      if(ins.error) throw ins.error;
+      regId=ins.data.id;
+    }
 
-  cerrarModal();
-  poblarFiltros();
-  renderRegistros();
-  renderSummary();
-  buildComparativa();
-  buildCos(); // actualiza costo real y variación en Flujo proyectado
+    const adjuntosFinal=[];
+    for(const a of adjuntosTemp){
+      if(a._file){
+        const path=await subirAdjuntoStorage(a._file, regId);
+        adjuntosFinal.push({nombre:a.nombre, nombreOrig:a.nombreOrig, path, tipo:a._file.type});
+      } else {
+        adjuntosFinal.push({nombre:a.nombre, nombreOrig:a.nombreOrig, path:a.path, tipo:a.tipo});
+      }
+    }
+    const updAdj=await sb.from('loteo_registros_gastos').update({adjuntos:adjuntosFinal}).eq('id',regId);
+    if(updAdj.error) throw updAdj.error;
+
+    await cargarRegistrosDesdeNube();
+    cerrarModal();
+    poblarFiltros();
+    renderRegistros();
+    renderSummary();
+    buildComparativa();
+    buildCos(); // actualiza costo real y variación en Flujo proyectado
+  }catch(e){
+    alert('No se pudo guardar el gasto: '+e.message);
+  }finally{
+    if(saveBtn) saveBtn.disabled=false;
+  }
 }
 
 function editarGasto(idx){
   abrirModal(idx);
 }
 
-function eliminarGasto(idx){
+async function eliminarGasto(idx){
   if(!confirm('¿Eliminar este registro?'))return;
+  const reg=registros[idx];
+  try{
+    const paths=(reg.adjuntos||[]).map(a=>a.path).filter(Boolean);
+    if(paths.length) await sb.storage.from('loteo-documentos').remove(paths);
+    const del=await sb.from('loteo_registros_gastos').delete().eq('id',reg.id);
+    if(del.error) throw del.error;
+  }catch(e){
+    alert('No se pudo eliminar el registro: '+e.message);
+    return;
+  }
   registros.splice(idx,1);
-  snap(); // guarda en historial para poder deshacer
   renderRegistros();
   renderSummary();
   buildComparativa();
