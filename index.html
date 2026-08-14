@@ -501,6 +501,24 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 .ap-card-name{font-size:12px;color:var(--color-text-primary);text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 2px}
 .ap-card-actions{position:absolute;top:4px;right:4px;display:none;gap:2px;background:var(--color-background-primary);border-radius:5px;box-shadow:0 1px 4px rgba(0,0,0,0.12)}
 .ap-card:hover .ap-card-actions{display:flex}
+
+/* Tablero de columnas (raíz de Anteproyecto) */
+.ap-board{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;align-items:flex-start}
+.ap-col{flex:0 0 240px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px;display:flex;flex-direction:column;gap:8px;min-height:60px}
+.ap-col-new{background:transparent;border:1.5px dashed var(--color-border-secondary);justify-content:center;align-items:stretch}
+.ap-col-hdr{display:flex;align-items:center;gap:4px}
+.ap-col-title{font-size:12px;font-weight:600;color:var(--color-text-primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-col-count{font-size:10px;color:var(--color-text-tertiary);background:var(--color-background-primary);border-radius:99px;padding:1px 6px;flex-shrink:0}
+.ap-col-body{display:flex;flex-direction:column;gap:6px;min-height:24px;border-radius:6px;transition:background 0.1s}
+.ap-col-body.ap-dragover{background:rgba(24,95,165,0.12)}
+.ap-folder-card{display:flex;align-items:center;gap:7px;padding:8px 8px;background:var(--color-background-primary);border:0.5px solid var(--color-border-secondary);border-radius:6px;cursor:grab}
+.ap-folder-card:active{cursor:grabbing}
+.ap-folder-card.ap-dragging{opacity:0.4}
+.ap-folder-card-name{flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ap-folder-card-actions{display:flex;gap:0}
+.ap-folder-card-actions .icon-btn{width:18px;height:18px}
+.ap-col-add{height:28px;font-size:11px;border:0.5px dashed var(--color-border-secondary);border-radius:5px;background:transparent;color:var(--color-text-tertiary);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px}
+.ap-col-add:hover{border-color:#185FA5;color:#185FA5}
 </style>
 </head>
 <body>
@@ -828,7 +846,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
   <div class="ap-toolbar">
     <div class="ap-breadcrumb" id="ap-breadcrumb"></div>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px" id="ap-toolbar-actions">
       <button class="add-btn" style="height:32px;padding:0 12px;font-size:12px" onclick="crearCarpetaAnteproyecto()">
         <i class="ti ti-folder-plus" style="font-size:13px"></i> Nueva carpeta
       </button>
@@ -839,7 +857,15 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
     </div>
   </div>
 
-  <div class="ap-grid" id="ap-grid"></div>
+  <!-- Nivel raíz: tablero de columnas -->
+  <div class="ap-board" id="ap-board" style="display:none"></div>
+  <div id="ap-sueltos-wrap" style="display:none;margin-top:1.25rem">
+    <div class="shdr-title" style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">Archivos sin carpeta</div>
+    <div class="ap-grid" id="ap-sueltos-grid"></div>
+  </div>
+
+  <!-- Dentro de una carpeta: explorador simple -->
+  <div class="ap-grid" id="ap-grid" style="display:none"></div>
 
 </div>
 </div><!-- /panel-anteproyecto -->
@@ -4624,20 +4650,28 @@ async function descargarOCpdfDesdeCard(idx){
 }
 
 /* ============================
-   ANTEPROYECTO — explorador de archivos (carpetas + archivos)
+   ANTEPROYECTO — tablero de columnas (raíz) + explorador (subcarpetas)
    ============================ */
 let apCarpetaActualId = null;
 let apBreadcrumb = [{id:null, nombre:'Anteproyecto'}];
 let apCarpetas = [];
 let apArchivos = [];
+let apColumnas = [];
+let apDragFolderId = null;
 
-function _mapApCarpetaRow(row){ return {id:row.id, nombre:row.nombre}; }
+function _mapApCarpetaRow(row){ return {id:row.id, nombre:row.nombre, columnaId:row.columna_id, orden:row.orden||0}; }
 function _mapApArchivoRow(row){ return {id:row.id, nombre:row.nombre, path:row.path, tipo:row.tipo, tamano:row.tamano_bytes}; }
+function _mapApColumnaRow(row){ return {id:row.id, nombre:row.nombre, orden:row.orden||0}; }
+
+function _apCardsEnColumna(colId){
+  return apCarpetas.filter(function(c){ return (c.columnaId||null)===(colId||null); })
+    .sort(function(a,b){ return (a.orden||0)-(b.orden||0); });
+}
 
 async function cargarAnteproyectoDesdeNube(){
   if(!sb) return;
   const carpetasRes = apCarpetaActualId===null
-    ? await sb.from('loteo_anteproyecto_carpetas').select('*').is('carpeta_padre_id', null).order('nombre')
+    ? await sb.from('loteo_anteproyecto_carpetas').select('*').is('carpeta_padre_id', null).order('orden')
     : await sb.from('loteo_anteproyecto_carpetas').select('*').eq('carpeta_padre_id', apCarpetaActualId).order('nombre');
   apCarpetas = (carpetasRes.data||[]).map(_mapApCarpetaRow);
 
@@ -4645,6 +4679,11 @@ async function cargarAnteproyectoDesdeNube(){
     ? await sb.from('loteo_anteproyecto_archivos').select('*').is('carpeta_id', null).order('nombre')
     : await sb.from('loteo_anteproyecto_archivos').select('*').eq('carpeta_id', apCarpetaActualId).order('nombre');
   apArchivos = (archivosRes.data||[]).map(_mapApArchivoRow);
+
+  if(apCarpetaActualId===null){
+    const colRes = await sb.from('loteo_anteproyecto_columnas').select('*').order('orden');
+    apColumnas = (colRes.data||[]).map(_mapApColumnaRow);
+  }
 }
 
 async function initAnteproyectoPanel(){
@@ -4676,13 +4715,77 @@ function renderApBreadcrumb(){
 
 function renderAnteproyecto(){
   renderApBreadcrumb();
-  const grid=document.getElementById('ap-grid');
-  if(apCarpetas.length===0 && apArchivos.length===0){
-    grid.innerHTML='<div class="cot-empty" style="grid-column:1/-1"><i class="ti ti-folder-open" style="font-size:24px;display:block;margin-bottom:8px"></i>Carpeta vacía. Crea una carpeta o sube un archivo.</div>';
+  document.getElementById('ap-toolbar-actions').style.display = apCarpetaActualId===null ? 'none' : '';
+  document.getElementById('ap-board').style.display = apCarpetaActualId===null ? 'flex' : 'none';
+  document.getElementById('ap-sueltos-wrap').style.display = (apCarpetaActualId===null && apArchivos.length>0) ? '' : 'none';
+  document.getElementById('ap-grid').style.display = apCarpetaActualId===null ? 'none' : 'grid';
+
+  if(apCarpetaActualId===null){
+    renderAnteproyectoBoard();
+    renderApGridInto('ap-sueltos-grid', [], apArchivos);
+  } else {
+    renderApGridInto('ap-grid', apCarpetas, apArchivos);
+  }
+}
+
+function apFolderCardHTML(c){
+  const nombreEsc=c.nombre.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+  return `<div class="ap-folder-card" draggable="true" data-folder-id="${c.id}"
+      ondragstart="onApFolderDragStart(event,${c.id})" ondragend="onApFolderDragEnd(event)">
+    <i class="ti ti-folder-filled" style="color:#C47A0E;font-size:16px;flex-shrink:0"></i>
+    <span class="ap-folder-card-name" ondblclick="abrirCarpetaAnteproyecto(${c.id},'${nombreEsc}')" title="${c.nombre}">${c.nombre}</span>
+    <span class="ap-folder-card-actions">
+      <button class="icon-btn" onclick="renombrarCarpetaAnteproyecto(${c.id})" title="Renombrar"><i class="ti ti-pencil" style="font-size:10px"></i></button>
+      <button class="icon-btn" onclick="eliminarCarpetaAnteproyecto(${c.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:10px"></i></button>
+    </span>
+  </div>`;
+}
+
+function renderAnteproyectoBoard(){
+  const board=document.getElementById('ap-board');
+  const columnas=[...apColumnas];
+  const sinColumna=_apCardsEnColumna(null);
+  let html='';
+  if(sinColumna.length>0){
+    html+=`<div class="ap-col" data-col-id="">
+      <div class="ap-col-hdr"><span class="ap-col-title">Sin columna</span><span class="ap-col-count">${sinColumna.length}</span></div>
+      <div class="ap-col-body" ondragover="onApColDragOver(event)" ondragleave="onApColDragLeave(event)" ondrop="onApColDrop(event,null)">
+        ${sinColumna.map(apFolderCardHTML).join('')}
+      </div>
+    </div>`;
+  }
+  columnas.forEach(function(col){
+    const folders=_apCardsEnColumna(col.id);
+    html+=`<div class="ap-col" data-col-id="${col.id}">
+      <div class="ap-col-hdr">
+        <span class="ap-col-title">${col.nombre}</span>
+        <span class="ap-col-count">${folders.length}</span>
+        <button class="icon-btn" onclick="renombrarColumnaAP(${col.id})" title="Renombrar columna"><i class="ti ti-pencil" style="font-size:11px"></i></button>
+        <button class="icon-btn" onclick="eliminarColumnaAP(${col.id})" title="Eliminar columna"><i class="ti ti-trash" style="font-size:11px"></i></button>
+      </div>
+      <div class="ap-col-body" ondragover="onApColDragOver(event)" ondragleave="onApColDragLeave(event)" ondrop="onApColDrop(event,${col.id})">
+        ${folders.map(apFolderCardHTML).join('')}
+      </div>
+      <button class="ap-col-add" onclick="crearCarpetaAnteproyecto(${col.id})"><i class="ti ti-plus" style="font-size:12px"></i> Nueva carpeta</button>
+    </div>`;
+  });
+  html+=`<div class="ap-col ap-col-new"><button class="ap-col-add" onclick="agregarColumnaAP()"><i class="ti ti-plus" style="font-size:12px"></i> Nueva columna</button></div>`;
+  board.innerHTML=html;
+}
+
+function renderApGridInto(elId, carpetas, archivos){
+  const grid=document.getElementById(elId);
+  if(!grid) return;
+  if(carpetas.length===0 && archivos.length===0){
+    if(elId==='ap-grid'){
+      grid.innerHTML='<div class="cot-empty" style="grid-column:1/-1"><i class="ti ti-folder-open" style="font-size:24px;display:block;margin-bottom:8px"></i>Carpeta vacía. Crea una carpeta o sube un archivo.</div>';
+    } else {
+      grid.innerHTML='';
+    }
     return;
   }
   let html='';
-  apCarpetas.forEach(function(c){
+  carpetas.forEach(function(c){
     const nombreEsc=c.nombre.replace(/'/g,"\\'").replace(/"/g,'&quot;');
     html+=`<div class="ap-card ap-folder" ondblclick="abrirCarpetaAnteproyecto(${c.id},'${nombreEsc}')" title="${c.nombre}">
       <i class="ti ti-folder-filled ap-card-icon" style="color:#C47A0E"></i>
@@ -4693,7 +4796,7 @@ function renderAnteproyecto(){
       </div>
     </div>`;
   });
-  apArchivos.forEach(function(a){
+  archivos.forEach(function(a){
     html+=`<div class="ap-card ap-file" ondblclick="descargarArchivoAnteproyecto(${a.id})" title="${a.nombre}">
       <i class="ti ${iconoArchivoAP(a.nombre)} ap-card-icon" style="color:#185FA5"></i>
       <div class="ap-card-name">${a.nombre}</div>
@@ -4705,6 +4808,66 @@ function renderAnteproyecto(){
     </div>`;
   });
   grid.innerHTML=html;
+}
+
+/* --- Drag & drop de carpetas entre columnas --- */
+function onApFolderDragStart(event, folderId){
+  apDragFolderId=folderId;
+  event.dataTransfer.setData('text/plain', String(folderId));
+  event.dataTransfer.effectAllowed='move';
+  event.target.classList.add('ap-dragging');
+}
+function onApFolderDragEnd(event){
+  event.target.classList.remove('ap-dragging');
+  apDragFolderId=null;
+}
+function onApColDragOver(event){
+  event.preventDefault();
+  event.dataTransfer.dropEffect='move';
+  event.currentTarget.classList.add('ap-dragover');
+}
+function onApColDragLeave(event){
+  event.currentTarget.classList.remove('ap-dragover');
+}
+async function onApColDrop(event, colId){
+  event.preventDefault();
+  event.currentTarget.classList.remove('ap-dragover');
+  const folderId=apDragFolderId || parseInt(event.dataTransfer.getData('text/plain'));
+  if(!folderId) return;
+  const destino=_apCardsEnColumna(colId).filter(function(c){return c.id!==folderId;});
+  const nuevoOrden=destino.length;
+  await sb.from('loteo_anteproyecto_carpetas').update({columna_id:colId, orden:nuevoOrden}).eq('id',folderId);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+/* --- Columnas --- */
+async function agregarColumnaAP(){
+  const nombre=prompt('Nombre de la columna:');
+  if(!nombre||!nombre.trim()) return;
+  const ins=await sb.from('loteo_anteproyecto_columnas').insert({nombre:nombre.trim(), orden:apColumnas.length}).select().single();
+  if(ins.error){ alert('No se pudo crear la columna: '+ins.error.message); return; }
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+async function renombrarColumnaAP(id){
+  const col=apColumnas.find(function(c){return c.id===id;});
+  if(!col) return;
+  const nombre=prompt('Nuevo nombre de la columna:', col.nombre);
+  if(!nombre||!nombre.trim()||nombre.trim()===col.nombre) return;
+  await sb.from('loteo_anteproyecto_columnas').update({nombre:nombre.trim()}).eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+async function eliminarColumnaAP(id){
+  const folders=_apCardsEnColumna(id);
+  const msg=folders.length>0
+    ? '¿Eliminar esta columna? Sus '+folders.length+' carpeta(s) pasarán a "Sin columna" (no se borran).'
+    : '¿Eliminar esta columna?';
+  if(!confirm(msg)) return;
+  await sb.from('loteo_anteproyecto_columnas').delete().eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
 }
 
 async function abrirCarpetaAnteproyecto(id, nombre){
@@ -4721,10 +4884,17 @@ async function irABreadcrumbAP(idx){
   renderAnteproyecto();
 }
 
-async function crearCarpetaAnteproyecto(){
+async function crearCarpetaAnteproyecto(columnaId){
   const nombre=prompt('Nombre de la carpeta:');
   if(!nombre||!nombre.trim()) return;
-  const ins=await sb.from('loteo_anteproyecto_carpetas').insert({nombre:nombre.trim(), carpeta_padre_id:apCarpetaActualId}).select().single();
+  const esRaiz=apCarpetaActualId===null;
+  const payload={nombre:nombre.trim(), carpeta_padre_id:apCarpetaActualId};
+  if(esRaiz){
+    const colId=(typeof columnaId==='number')?columnaId:null;
+    payload.columna_id=colId;
+    payload.orden=_apCardsEnColumna(colId).length;
+  }
+  const ins=await sb.from('loteo_anteproyecto_carpetas').insert(payload).select().single();
   if(ins.error){ alert('No se pudo crear la carpeta: '+ins.error.message); return; }
   await cargarAnteproyectoDesdeNube();
   renderAnteproyecto();
