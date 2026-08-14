@@ -488,6 +488,19 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 .oc-doc-source-img img{max-width:100%;max-height:300px;object-fit:contain;border:1px solid #e6e6e6;border-radius:4px}
 .oc-ocr-progress{height:4px;background:#E6F1FB;border-radius:99px;overflow:hidden;margin-top:6px}
 .oc-ocr-progress-bar{height:100%;background:#0C447C;width:0%;transition:width 0.2s}
+
+/* ===== ANTEPROYECTO (explorador de archivos) ===== */
+.ap-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:1.25rem;flex-wrap:wrap}
+.ap-breadcrumb{display:flex;align-items:center;gap:2px;flex-wrap:wrap;font-size:13px}
+.ap-breadcrumb span{white-space:nowrap}
+.ap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}
+.ap-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 10px 10px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:var(--color-background-primary);cursor:default;transition:background 0.12s,border-color 0.12s}
+.ap-folder{cursor:pointer}
+.ap-card:hover{background:var(--color-background-secondary);border-color:var(--color-border-primary)}
+.ap-card-icon{font-size:32px}
+.ap-card-name{font-size:12px;color:var(--color-text-primary);text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 2px}
+.ap-card-actions{position:absolute;top:4px;right:4px;display:none;gap:2px;background:var(--color-background-primary);border-radius:5px;box-shadow:0 1px 4px rgba(0,0,0,0.12)}
+.ap-card:hover .ap-card-actions{display:flex}
 </style>
 </head>
 <body>
@@ -533,6 +546,9 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   </button>
   <button class="tab-btn" onclick="showTab('ordencompra',this)">
     <i class="ti ti-shopping-cart" style="font-size:14px"></i> Orden de compra
+  </button>
+  <button class="tab-btn" onclick="showTab('anteproyecto',this)">
+    <i class="ti ti-folders" style="font-size:14px"></i> Anteproyecto
   </button>
 </div>
 
@@ -805,6 +821,28 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 </div>
 </div><!-- /panel-ordencompra -->
+
+<!-- PANEL ANTEPROYECTO -->
+<div class="tab-panel" id="panel-anteproyecto">
+<div class="flujo">
+
+  <div class="ap-toolbar">
+    <div class="ap-breadcrumb" id="ap-breadcrumb"></div>
+    <div style="display:flex;gap:8px">
+      <button class="add-btn" style="height:32px;padding:0 12px;font-size:12px" onclick="crearCarpetaAnteproyecto()">
+        <i class="ti ti-folder-plus" style="font-size:13px"></i> Nueva carpeta
+      </button>
+      <label class="add-btn" style="height:32px;padding:0 12px;font-size:12px;cursor:pointer">
+        <i class="ti ti-upload" style="font-size:13px"></i> Subir archivo
+        <input type="file" id="ap-file-input" multiple style="display:none" onchange="subirArchivoAnteproyecto(event)"/>
+      </label>
+    </div>
+  </div>
+
+  <div class="ap-grid" id="ap-grid"></div>
+
+</div>
+</div><!-- /panel-anteproyecto -->
 
 <!-- MODAL ORDEN DE COMPRA -->
 <div class="oc-modal-overlay hidden" id="oc-modal-overlay">
@@ -1819,6 +1857,7 @@ function showTab(id, btn){
   if(id==='registro') initRegistroPanel();
   if(id==='cotizaciones') initCotizacionesPanel();
   if(id==='ordencompra') initOCPanel();
+  if(id==='anteproyecto') initAnteproyectoPanel();
 }
 
 /* ---- HELPERS ---- */
@@ -4582,6 +4621,188 @@ async function descargarOCpdfDesdeCard(idx){
   }finally{
     document.body.removeChild(holder);
   }
+}
+
+/* ============================
+   ANTEPROYECTO — explorador de archivos (carpetas + archivos)
+   ============================ */
+let apCarpetaActualId = null;
+let apBreadcrumb = [{id:null, nombre:'Anteproyecto'}];
+let apCarpetas = [];
+let apArchivos = [];
+
+function _mapApCarpetaRow(row){ return {id:row.id, nombre:row.nombre}; }
+function _mapApArchivoRow(row){ return {id:row.id, nombre:row.nombre, path:row.path, tipo:row.tipo, tamano:row.tamano_bytes}; }
+
+async function cargarAnteproyectoDesdeNube(){
+  if(!sb) return;
+  const carpetasRes = apCarpetaActualId===null
+    ? await sb.from('loteo_anteproyecto_carpetas').select('*').is('carpeta_padre_id', null).order('nombre')
+    : await sb.from('loteo_anteproyecto_carpetas').select('*').eq('carpeta_padre_id', apCarpetaActualId).order('nombre');
+  apCarpetas = (carpetasRes.data||[]).map(_mapApCarpetaRow);
+
+  const archivosRes = apCarpetaActualId===null
+    ? await sb.from('loteo_anteproyecto_archivos').select('*').is('carpeta_id', null).order('nombre')
+    : await sb.from('loteo_anteproyecto_archivos').select('*').eq('carpeta_id', apCarpetaActualId).order('nombre');
+  apArchivos = (archivosRes.data||[]).map(_mapApArchivoRow);
+}
+
+async function initAnteproyectoPanel(){
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+function iconoArchivoAP(nombre){
+  const ext=(nombre.split('.').pop()||'').toLowerCase();
+  if(ext==='pdf') return 'ti-file-type-pdf';
+  if(['xlsx','xls','csv'].includes(ext)) return 'ti-file-spreadsheet';
+  if(['doc','docx'].includes(ext)) return 'ti-file-type-doc';
+  if(['ppt','pptx'].includes(ext)) return 'ti-presentation';
+  if(['png','jpg','jpeg','gif','webp','bmp'].includes(ext)) return 'ti-photo';
+  if(['dwg','dxf'].includes(ext)) return 'ti-vector-triangle';
+  if(['zip','rar','7z'].includes(ext)) return 'ti-file-zip';
+  return 'ti-file';
+}
+
+function renderApBreadcrumb(){
+  const el=document.getElementById('ap-breadcrumb');
+  el.innerHTML=apBreadcrumb.map(function(b,i){
+    const isLast=(i===apBreadcrumb.length-1);
+    const style='color:'+(isLast?'var(--color-text-primary)':'var(--color-text-secondary)')+';font-weight:'+(isLast?'500':'400')+';cursor:'+(isLast?'default':'pointer');
+    const chevron=isLast?'':'<i class="ti ti-chevron-right" style="font-size:11px;color:var(--color-text-tertiary);margin:0 2px"></i>';
+    return `<span style="${style}" onclick="${isLast?'':'irABreadcrumbAP('+i+')'}">${b.nombre}</span>${chevron}`;
+  }).join('');
+}
+
+function renderAnteproyecto(){
+  renderApBreadcrumb();
+  const grid=document.getElementById('ap-grid');
+  if(apCarpetas.length===0 && apArchivos.length===0){
+    grid.innerHTML='<div class="cot-empty" style="grid-column:1/-1"><i class="ti ti-folder-open" style="font-size:24px;display:block;margin-bottom:8px"></i>Carpeta vacía. Crea una carpeta o sube un archivo.</div>';
+    return;
+  }
+  let html='';
+  apCarpetas.forEach(function(c){
+    const nombreEsc=c.nombre.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    html+=`<div class="ap-card ap-folder" ondblclick="abrirCarpetaAnteproyecto(${c.id},'${nombreEsc}')" title="${c.nombre}">
+      <i class="ti ti-folder-filled ap-card-icon" style="color:#C47A0E"></i>
+      <div class="ap-card-name">${c.nombre}</div>
+      <div class="ap-card-actions">
+        <button class="icon-btn" onclick="event.stopPropagation();renombrarCarpetaAnteproyecto(${c.id})" title="Renombrar"><i class="ti ti-pencil" style="font-size:11px"></i></button>
+        <button class="icon-btn" onclick="event.stopPropagation();eliminarCarpetaAnteproyecto(${c.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:11px"></i></button>
+      </div>
+    </div>`;
+  });
+  apArchivos.forEach(function(a){
+    html+=`<div class="ap-card ap-file" ondblclick="descargarArchivoAnteproyecto(${a.id})" title="${a.nombre}">
+      <i class="ti ${iconoArchivoAP(a.nombre)} ap-card-icon" style="color:#185FA5"></i>
+      <div class="ap-card-name">${a.nombre}</div>
+      <div class="ap-card-actions">
+        <button class="icon-btn" onclick="event.stopPropagation();descargarArchivoAnteproyecto(${a.id})" title="Descargar"><i class="ti ti-download" style="font-size:11px"></i></button>
+        <button class="icon-btn" onclick="event.stopPropagation();renombrarArchivoAnteproyecto(${a.id})" title="Renombrar"><i class="ti ti-pencil" style="font-size:11px"></i></button>
+        <button class="icon-btn" onclick="event.stopPropagation();eliminarArchivoAnteproyecto(${a.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:11px"></i></button>
+      </div>
+    </div>`;
+  });
+  grid.innerHTML=html;
+}
+
+async function abrirCarpetaAnteproyecto(id, nombre){
+  apCarpetaActualId=id;
+  apBreadcrumb.push({id:id, nombre:nombre});
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function irABreadcrumbAP(idx){
+  apBreadcrumb=apBreadcrumb.slice(0,idx+1);
+  apCarpetaActualId=apBreadcrumb[apBreadcrumb.length-1].id;
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function crearCarpetaAnteproyecto(){
+  const nombre=prompt('Nombre de la carpeta:');
+  if(!nombre||!nombre.trim()) return;
+  const ins=await sb.from('loteo_anteproyecto_carpetas').insert({nombre:nombre.trim(), carpeta_padre_id:apCarpetaActualId}).select().single();
+  if(ins.error){ alert('No se pudo crear la carpeta: '+ins.error.message); return; }
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function renombrarCarpetaAnteproyecto(id){
+  const carpeta=apCarpetas.find(function(c){return c.id===id;});
+  if(!carpeta) return;
+  const nombre=prompt('Nuevo nombre de la carpeta:', carpeta.nombre);
+  if(!nombre||!nombre.trim()||nombre.trim()===carpeta.nombre) return;
+  await sb.from('loteo_anteproyecto_carpetas').update({nombre:nombre.trim()}).eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function _eliminarArchivosStorageDeCarpetaAP(carpetaId){
+  // Recorre recursivamente la carpeta y sus subcarpetas, borrando los
+  // archivos del bucket antes de que el "on delete cascade" borre las
+  // filas de la base de datos (el cascade no toca Storage).
+  const archivosRes=await sb.from('loteo_anteproyecto_archivos').select('path').eq('carpeta_id', carpetaId);
+  const paths=(archivosRes.data||[]).map(function(a){return a.path;}).filter(Boolean);
+  if(paths.length) await sb.storage.from('loteo-documentos').remove(paths);
+  const subRes=await sb.from('loteo_anteproyecto_carpetas').select('id').eq('carpeta_padre_id', carpetaId);
+  for(const sub of (subRes.data||[])){
+    await _eliminarArchivosStorageDeCarpetaAP(sub.id);
+  }
+}
+
+async function eliminarCarpetaAnteproyecto(id){
+  if(!confirm('¿Eliminar esta carpeta y todo su contenido (subcarpetas y archivos)?')) return;
+  await _eliminarArchivosStorageDeCarpetaAP(id);
+  await sb.from('loteo_anteproyecto_carpetas').delete().eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function subirArchivoAnteproyecto(event){
+  const files=[...event.target.files];
+  for(const file of files){
+    const path='anteproyecto/'+(apCarpetaActualId||'raiz')+'/'+Date.now()+'_'+file.name;
+    const up=await sb.storage.from('loteo-documentos').upload(path, file);
+    if(up.error){ alert('No se pudo subir "'+file.name+'": '+up.error.message); continue; }
+    await sb.from('loteo_anteproyecto_archivos').insert({
+      carpeta_id:apCarpetaActualId, nombre:file.name, path:path, tipo:file.type, tamano_bytes:file.size
+    });
+  }
+  event.target.value='';
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function descargarArchivoAnteproyecto(id){
+  const a=apArchivos.find(function(x){return x.id===id;});
+  if(!a) return;
+  const url=await obtenerUrlAdjunto(a.path);
+  if(!url){ alert('No se pudo generar el link de descarga.'); return; }
+  const link=document.createElement('a');
+  link.href=url; link.download=a.nombre; link.target='_blank'; link.click();
+}
+
+async function renombrarArchivoAnteproyecto(id){
+  const a=apArchivos.find(function(x){return x.id===id;});
+  if(!a) return;
+  const nombre=prompt('Nuevo nombre del archivo:', a.nombre);
+  if(!nombre||!nombre.trim()||nombre.trim()===a.nombre) return;
+  await sb.from('loteo_anteproyecto_archivos').update({nombre:nombre.trim()}).eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
+}
+
+async function eliminarArchivoAnteproyecto(id){
+  if(!confirm('¿Eliminar este archivo?')) return;
+  const a=apArchivos.find(function(x){return x.id===id;});
+  if(!a) return;
+  if(a.path) await sb.storage.from('loteo-documentos').remove([a.path]);
+  await sb.from('loteo_anteproyecto_archivos').delete().eq('id',id);
+  await cargarAnteproyectoDesdeNube();
+  renderAnteproyecto();
 }
 </script>
 </body>
