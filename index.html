@@ -1355,17 +1355,18 @@ function renderEtapaTabs(){
   const cont = document.getElementById('etapa-tabs');
   if(!cont) return;
   const pillBase = 'height:30px;padding:0 14px;border-radius:99px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:6px;border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);color:var(--color-text-secondary)';
-  const pillActive = 'background:#185FA5;border-color:#185FA5;color:#fff';
-  let html = etapas.map(function(e){
+  const pillActiveEtapa = 'background:#185FA5;border-color:#185FA5;color:#fff';
+  const pillActiveCons = 'background:#6B2FA0;border-color:#6B2FA0;color:#fff';
+  let html = `<span style="${pillBase}${vistaConsolidado?';'+pillActiveCons:''}" onclick="mostrarConsolidado()"><i class="ti ti-chart-arrows-vertical" style="font-size:12px"></i> Flujo Consolidado</span>`;
+  html += etapas.map(function(e){
     const activo = !vistaConsolidado && e.id===etapaActivaId;
-    return `<span style="${pillBase}${activo?';'+pillActive:''}" onclick="seleccionarEtapa(${e.id})">
-      ${e.nombre}
+    return `<span style="${pillBase}${activo?';'+pillActiveEtapa:''}" onclick="seleccionarEtapa(${e.id})">
+      Flujo ${e.nombre}
       <i class="ti ti-pencil" style="font-size:11px;opacity:0.6" onclick="event.stopPropagation();renombrarEtapa(${e.id})" title="Renombrar"></i>
       ${etapas.length>1?`<i class="ti ti-x" style="font-size:11px;opacity:0.6" onclick="event.stopPropagation();eliminarEtapa(${e.id})" title="Eliminar etapa"></i>`:''}
     </span>`;
   }).join('');
   html += `<span style="${pillBase}" onclick="agregarEtapa()"><i class="ti ti-plus" style="font-size:12px"></i> Nueva etapa</span>`;
-  html += `<span style="${pillBase}${vistaConsolidado?';'+pillActive.replace('#185FA5','#6B2FA0').replace('#185FA5','#6B2FA0'):''}${vistaConsolidado?';background:#6B2FA0;border-color:#6B2FA0;color:#fff':''}" onclick="mostrarConsolidado()"><i class="ti ti-chart-arrows-vertical" style="font-size:12px"></i> Consolidado</span>`;
   cont.innerHTML = html;
 }
 
@@ -1492,48 +1493,102 @@ async function mostrarConsolidado(){
   wrap.style.display = '';
   wrap.innerHTML = '<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">Cargando…</div>';
 
-  var lotesRes   = await sb.from('loteo_lotes').select('*');
-  var centrosRes = await sb.from('loteo_centros').select('*');
-  var lotesRows   = lotesRes.data || [];
-  var centrosRows = centrosRes.data || [];
+  // Ingresos: se listan lote por lote, agrupados por etapa (cada etapa
+  // puede vender productos distintos). Costos: se fusionan por nombre
+  // de centro entre TODAS las etapas — si un centro solo existe en una
+  // etapa (algo que agregaste ahí y no en las demás), igual aparece,
+  // con el total de esa única etapa.
+  var etapasOrdenadas = [...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var ingresoFilas = [];          // [{etapa, lote}]
+  var centrosPorNombre = {};      // nombre -> {nombre, cls, total}
 
-  var filas = etapas.map(function(e){
-    var lotesE   = lotesRows.filter(function(r){return r.etapa_id===e.id;}).map(_mapLoteRow);
-    var centrosE = centrosRows.filter(function(r){return r.etapa_id===e.id;}).map(_mapCentroRow);
-    var ing = lotesE.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
-    var cos = centrosE.reduce(function(a,c){return a+calcCentro(c);},0);
-    return { nombre:e.nombre, ing:ing, cos:cos, mar:ing-cos };
+  for(const e of etapasOrdenadas){
+    var lotesRes = await sb.from('loteo_lotes').select('*').eq('etapa_id', e.id).order('orden');
+    (lotesRes.data||[]).map(_mapLoteRow).forEach(function(l){
+      ingresoFilas.push({etapa:e.nombre, lote:l});
+    });
+    var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', e.id).order('orden');
+    (centrosRes.data||[]).map(_mapCentroRow).forEach(function(c){
+      var tot=calcCentro(c);
+      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0};
+      centrosPorNombre[c.nombre].total += tot;
+    });
+  }
+
+  var regRes = await sb.from('loteo_registros_gastos').select('centro,monto').not('etapa_id','is',null);
+  var realPorNombre = {};
+  (regRes.data||[]).forEach(function(r){
+    realPorNombre[r.centro] = (realPorNombre[r.centro]||0) + Number(r.monto);
   });
-  var totIng = filas.reduce(function(a,f){return a+f.ing;},0);
-  var totCos = filas.reduce(function(a,f){return a+f.cos;},0);
+
+  var totIng = ingresoFilas.reduce(function(a,f){return a+calcLote(f.lote).totalUF;},0);
+  var costosConsolidados = Object.values(centrosPorNombre);
+  var totCos = costosConsolidados.reduce(function(a,c){return a+c.total;},0);
+  var totReal = costosConsolidados.reduce(function(a,c){return a+(realPorNombre[c.nombre]||0);},0);
   var totMar = totIng-totCos;
 
-  var rows = filas.map(function(f){
-    var pct = totIng>0 ? (f.mar/totIng*100) : 0;
+  var ingRows = ingresoFilas.map(function(f){
+    var c=calcLote(f.lote);
     return `<tr>
-      <td style="font-weight:500">${f.nombre}</td>
-      <td>${fval(f.ing)}</td>
-      <td>${fval(f.cos)}</td>
-      <td class="${f.mar>=0?'pos':'neg'}">${fval(f.mar)}</td>
-      <td class="muted">${fpct(pct)}</td>
+      <td style="text-align:left;font-weight:500">${f.etapa}</td>
+      <td style="text-align:left">${f.lote.nombre}</td>
+      <td>${f.lote.unidades}</td>
+      <td>${f1(f.lote.m2)} m²</td>
+      <td>${f1(f.lote.ufm2)} UF/m²</td>
+      <td>${fval(c.ufLote)}</td>
+      <td style="font-weight:500">${fval(c.totalUF)}</td>
+    </tr>`;
+  }).join('');
+
+  var cosRows = costosConsolidados.map(function(c){
+    var real=realPorNombre[c.nombre]||0;
+    return `<tr>
+      <td style="text-align:left"><span class="tipo-badge ${c.cls||'tgen'}">${c.nombre}</span></td>
+      <td class="neg">${fval(c.total)}</td>
+      <td style="text-align:center">${fReal(real)}</td>
+      <td style="text-align:center">${fVar(c.total,real)}</td>
     </tr>`;
   }).join('');
 
   wrap.innerHTML = `
-    <div class="section-hdr res">
-      <i class="ti ti-chart-arrows-vertical" style="font-size:15px;color:#6B2FA0"></i>
-      <span class="shdr-title" style="color:#4A1E72">Flujo consolidado — todas las etapas</span>
-      <span class="shdr-badge" style="background:#6B2FA0;color:#fff">Consolidado</span>
+    <div class="metric-strip" style="margin-bottom:1.25rem">
+      <div class="metric pos"><div class="metric-label">Ingresos totales</div><div class="metric-value">${fval(totIng)}</div></div>
+      <div class="metric neg"><div class="metric-label">Costos totales</div><div class="metric-value">${fval(totCos)}</div></div>
+      <div class="metric ${totMar>=0?'pos':'neg'}"><div class="metric-label">Margen bruto</div><div class="metric-value">${fval(totMar)}</div><div class="metric-sub">${totIng>0?fpct(totMar/totIng*100):'—'} sobre ingresos</div></div>
+      <div class="metric"><div class="metric-label">Etapas incluidas</div><div class="metric-value">${etapasOrdenadas.length}</div></div>
     </div>
-    <table class="ft" style="border:0.5px solid #D9C5EE">
-      <thead><tr style="background:#F4EEF9;color:#4A1E72">
-        <th style="text-align:left">Etapa</th><th>Ingresos</th><th>Costos</th><th>Margen</th><th>% sobre ingresos</th>
+
+    <div class="section-hdr ing">
+      <i class="ti ti-building-estate" style="font-size:15px;color:#185FA5"></i>
+      <span class="shdr-title ing">Partida 1 — Ingresos · Todas las etapas</span>
+      <span class="shdr-badge ing">Ingresos</span>
+    </div>
+    <table class="ft ing">
+      <colgroup><col style="width:16%"><col style="width:20%"><col style="width:11%"><col style="width:14%"><col style="width:12%"><col style="width:13%"><col style="width:14%"></colgroup>
+      <thead><tr>
+        <th style="text-align:left">Etapa</th><th style="text-align:left">Tipo de lote</th><th>Unidades</th><th>Superficie (m²)</th>
+        <th>UF / m²</th><th>UF / lote</th><th>Total UF</th>
       </tr></thead>
-      <tbody>${rows}
-        <tr class="total-row" style="background:#F4EEF9;color:#4A1E72">
-          <td>Total proyecto</td><td>${fval(totIng)}</td><td>${fval(totCos)}</td>
-          <td class="${totMar>=0?'pos':'neg'}">${fval(totMar)}</td>
-          <td>${totIng>0?fpct(totMar/totIng*100):'—'}</td>
+      <tbody>${ingRows || '<tr><td colspan="7" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin lotes cargados</td></tr>'}
+        <tr class="total-row"><td colspan="6">Total ingresos</td><td>${fval(totIng)}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="section-hdr cos">
+      <i class="ti ti-receipt" style="font-size:15px;color:#A32D2D"></i>
+      <span class="shdr-title cos">Partida 2 — Costos · Todas las etapas (fusionado por centro)</span>
+      <span class="shdr-badge cos">Costos</span>
+    </div>
+    <table class="ft cos">
+      <colgroup><col style="width:40%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup>
+      <thead><tr>
+        <th style="text-align:left">Centro de costo</th><th>Total UF</th><th>Costo real</th><th>Variación</th>
+      </tr></thead>
+      <tbody>${cosRows || '<tr><td colspan="4" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>'}
+        <tr class="total-row">
+          <td>Total costos</td><td class="neg">${fval(totCos)}</td>
+          <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
+          <td style="text-align:center">${fVar(totCos,totReal)}</td>
         </tr>
       </tbody>
     </table>`;
