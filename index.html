@@ -1824,55 +1824,24 @@ let histIdx=0;
 
 /* ---- UF AUTOMÁTICA DESDE SII ---- */
 async function fetchUFdesdesSII(){
+  // Fuente: mindicador.cl — API pública y estable (basada en los datos
+  // oficiales que publica el Banco Central/SII), en JSON. Reemplaza el
+  // scraping anterior del HTML del SII vía proxy, que era frágil y
+  // fallaba seguido (quedaba en "manual").
   const statusEl=document.getElementById('uf-status');
   try{
-    const hoy=new Date();
-    const anio=hoy.getFullYear();
-    const mes=String(hoy.getMonth()+1).padStart(2,'0');
-    const dia=hoy.getDate();
-    // Proxy CORS-libre vía allorigins
-    const url=`https://api.allorigins.win/get?url=${encodeURIComponent('https://www.sii.cl/valores_y_fechas/uf/uf'+anio+'.htm')}`;
-    const resp=await fetch(url,{signal:AbortSignal.timeout(8000)});
+    const resp=await fetch('https://mindicador.cl/api/uf', {signal:AbortSignal.timeout(8000)});
     if(!resp.ok) throw new Error('HTTP '+resp.status);
     const json=await resp.json();
-    const html=json.contents||'';
-    // El SII lista días en formato: <td ...>DIA</td><td ...>$X.XXX,XX</td>
-    // Buscamos el valor del día actual, si no el último disponible
-    const rows=[...html.matchAll(/<tr[^>]*>\s*<td[^>]*>\s*(\d{1,2})\s*<\/td>\s*<td[^>]*>([\d.,\s]+)<\/td>/gi)];
-    // Filtrar al mes actual (la tabla del SII organiza por meses en columnas)
-    // Estrategia: extraer todos los valores y buscar el del día de hoy o el último
-    // La página tiene columnas por mes; usar regex más simple para capturar pares día-valor del mes corriente
-    const mesAbrev=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][hoy.getMonth()];
-    // Buscar la sección del mes actual: aparece como cabecera antes de los días
-    const mesIdx=html.toLowerCase().indexOf(mesAbrev);
-    let ufVal=null;
-    if(mesIdx>-1){
-      const segmento=html.slice(mesIdx, mesIdx+6000);
-      const pares=[...segmento.matchAll(/>\s*(\d{1,2})\s*<[^>]*>[^<]*<[^>]*>\s*([\d.]+,\d{2})\s*</g)];
-      // Buscar día exacto primero, luego el mayor día disponible ≤ hoy
-      let mejorDia=0;
-      for(const p of pares){
-        const d=parseInt(p[1]);
-        if(d<=dia && d>mejorDia){
-          mejorDia=d;
-          ufVal=parseFloat(p[2].replace(/\./g,'').replace(',','.'));
-        }
-      }
-    }
-    // Si no encontramos por sección de mes, usar regex global más simple
-    if(!ufVal){
-      const todos=[...html.matchAll(/([\d]{1,3}(?:\.\d{3})*,\d{2})/g)]
-        .map(m=>parseFloat(m[1].replace(/\./g,'').replace(',','.')))
-        .filter(v=>v>30000&&v<100000);
-      if(todos.length) ufVal=todos[todos.length-1];
-    }
-    if(ufVal&&ufVal>30000){
-      document.getElementById('uf-val').value=ufVal;
-      recalc();
-      if(statusEl) statusEl.innerHTML=`<i class="ti ti-check" style="font-size:11px;color:#0F6E56"></i> <span style="color:#0F6E56">SII ${dia.toString().padStart(2,'0')}/${mes}/${anio}</span>`;
-    } else {
-      throw new Error('valor no encontrado');
-    }
+    const dato=(json.serie||[])[0];
+    if(!dato || !dato.valor) throw new Error('sin datos');
+    const ufVal=Math.round(dato.valor*100)/100;
+    if(!(ufVal>1000)) throw new Error('valor no válido');
+    document.getElementById('uf-val').value=ufVal;
+    recalc();
+    const f=new Date(dato.fecha);
+    const fStr=String(f.getDate()).padStart(2,'0')+'/'+String(f.getMonth()+1).padStart(2,'0')+'/'+f.getFullYear();
+    if(statusEl) statusEl.innerHTML=`<i class="ti ti-check" style="font-size:11px;color:#0F6E56"></i> <span style="color:#0F6E56">SII ${fStr}</span>`;
   }catch(e){
     if(statusEl) statusEl.innerHTML=`<i class="ti ti-alert-triangle" style="font-size:11px;color:#C47A0E"></i> <span style="color:#C47A0E" title="${e.message}">manual</span>`;
   }
@@ -1972,7 +1941,7 @@ function buildIng(){
     dr.className='desglose-row'+(ingExpandido?'':' hidden');
     dr.innerHTML=`<td style="padding-left:28px;color:var(--color-text-secondary)">
         <i class="ti ti-corner-down-right" style="font-size:11px;margin-right:3px;color:var(--color-text-tertiary)"></i>
-        <input class="ci ni" value="${l.nombre}" style="width:78px" onchange="lotes[${i}].nombre=this.value;snap();recalc()"/></td>
+        <input class="ci ni" value="${l.nombre}" style="width:78px" data-minw="78" oninput="autoGrowNI(this)" onchange="lotes[${i}].nombre=this.value;snap();recalc()"/></td>
       <td><input class="ci" type="number" min="1" value="${l.unidades}" style="width:52px" onchange="lotes[${i}].unidades=+this.value||0;snap();recalc()"/></td>
       <td><input class="ci" type="number" min="1" value="${l.m2}" style="width:65px" onchange="lotes[${i}].m2=+this.value||0;snap();recalc()"/></td>
       <td><input class="ci" type="number" min="0" step="0.01" value="${l.ufm2}" style="width:55px" onchange="lotes[${i}].ufm2=+this.value||0;snap();recalc()"/></td>
@@ -1986,6 +1955,7 @@ function buildIng(){
   const ttr=document.createElement('tr');ttr.className='total-row';
   ttr.innerHTML=`<td colspan="3">Total ingresos</td><td class="muted">${lotes.reduce((a,l)=>a+l.unidades,0)} lotes</td><td></td><td>${fval(totIngUF())}</td><td></td>`;
   tb.appendChild(ttr);
+  tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
 }
 
 /* ---- HELPERS COSTO REAL ---- */
@@ -2027,7 +1997,7 @@ function buildCos(){
     const pr=document.createElement('tr');pr.className='partida-row';
     pr.innerHTML=`
       <td><button class="toggle-btn" onclick="toggleCentro(${ci})">${exp?'−':'+'}</button>
-          <input class="ci ni" value="${c.nombre}" style="width:110px;font-weight:500;background:var(--color-background-secondary);border-color:transparent" onchange="centros[${ci}].nombre=this.value;snap();recalc()"/></td>
+          <input class="ci ni" value="${c.nombre}" style="width:110px;font-weight:500;background:var(--color-background-secondary);border-color:transparent" data-minw="110" oninput="autoGrowNI(this)" onchange="centros[${ci}].nombre=this.value;snap();recalc()"/></td>
       <td class="muted">${exp?'—':f1(totCant)}</td>
       <td class="muted">${exp?'—':funit(unitProm)}</td>
       <td class="neg">${fval(totUF)}</td>
@@ -2047,7 +2017,7 @@ function buildCos(){
           <td style="padding-left:22px">
               <button class="sub-toggle" onclick="toggleSubcentro(${ci},${si})">${scExp?'−':'+'}</button>
               <input class="ci ni" value="${sc.nombre}" style="width:110px;font-size:12px;background:var(--color-background-info);border-color:transparent;font-weight:500"
-                onchange="centros[${ci}].subcentros[${si}].nombre=this.value;recalc()"/></td>
+                data-minw="110" oninput="autoGrowNI(this)" onchange="centros[${ci}].subcentros[${si}].nombre=this.value;recalc()"/></td>
             <td class="muted">${scExp?'—':sc.items.reduce((a,it)=>a+it.cantidad,0).toFixed(1)}</td>
             <td class="muted">—</td>
             <td class="neg">${fval(scTot)}</td>
@@ -2065,7 +2035,7 @@ function buildCos(){
           itr.innerHTML=`
             <td style="padding-left:46px;color:var(--color-text-secondary)">
                 <i class="ti ti-corner-down-right" style="font-size:10px;margin-right:3px;color:var(--color-text-tertiary)"></i>
-                <input class="ci ni" value="${it.nombre}" style="width:100px" onchange="centros[${ci}].subcentros[${si}].items[${ii}].nombre=this.value"/>
+                <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)" onchange="centros[${ci}].subcentros[${si}].items[${ii}].nombre=this.value"/>
                 <select class="ci" style="width:44px;padding:0 2px;font-size:11px;margin-left:2px"
                   onchange="centros[${ci}].subcentros[${si}].items[${ii}].und=this.value">${undOpts}</select>
               </td>
@@ -2113,6 +2083,7 @@ function buildCos(){
     <td style="text-align:center">${fVar(totPresup,totReal)}</td>
     <td></td>`;
   tb.appendChild(ttr);
+  tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
 }
 
 /* ---- BUILD RES ---- */
@@ -2250,6 +2221,10 @@ function addCentro(){centros.push({nombre:'Nuevo centro',cls:nextCls(centros),ex
 function delCentro(ci){if(centros.length<=1)return;centros.splice(ci,1);snap();recalc()}
 function addItem(ci){centros[ci].items.push({nombre:'Nuevo ítem',cantidad:1,unitario:0});centros[ci].expandido=true;snap();recalc()}
 function delItem(ci,ii){if(centros[ci].items.length<=1)return;centros[ci].items.splice(ii,1);snap();recalc()}
+function autoGrowNI(el){
+  const min=parseInt(el.dataset.minw,10)||70;
+  el.style.width=Math.max(min, el.value.length*7+22)+'px';
+}
 function recalc(){updateHeaders();buildMetrics();buildIng();buildCos();buildRes();buildChart()}
 recalc();
 _initAuthCheck();
