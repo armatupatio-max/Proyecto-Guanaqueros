@@ -753,6 +753,9 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   </div>
   <div class="reg-total-bar" id="reg-gen-total-bar"></div>
 
+  <!-- Resumen por centro de costo: consolidado + desglose por etapa -->
+  <div id="resumen-centros-wrap" style="margin-top:2rem"></div>
+
 </div>
 </div><!-- /panel-registro -->
 
@@ -1350,6 +1353,12 @@ async function _initAuthCheck(){
 let etapas = [];
 let etapaActivaId = null;
 let vistaConsolidado = false;
+// true SOLO cuando lotes/centros en memoria reflejan fielmente lo que
+// hay en la nube para etapaActivaId. Mientras es false, cualquier
+// intento de guardar se bloquea — evita que un guardado disparado en
+// mal momento (carga inicial, cambio de etapa a medias) borre datos
+// reales al reemplazarlos con un array vacío o desactualizado.
+let datosListos = false;
 
 function renderEtapaTabs(){
   const cont = document.getElementById('etapa-tabs');
@@ -1387,6 +1396,7 @@ async function cargarEtapasDesdeNube(){
 async function seleccionarEtapa(id){
   clearTimeout(_guardarLCTimer);
   await _guardarLotesCentrosAhora(); // asegura que lo pendiente de la etapa anterior quede guardado
+  datosListos = false;
   vistaConsolidado = false;
   etapaActivaId = id;
   document.getElementById('etapa-detalle-wrap').style.display = '';
@@ -1469,10 +1479,12 @@ function actualizarNombresEtapaEnHeaders(){
 }
 
 async function _cargarLotesCentrosDeEtapaActiva(){
+  datosListos = false;
   var lotesRes   = await sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden');
   var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden');
   lotes   = (lotesRes.data||[]).map(_mapLoteRow);
   centros = (centrosRes.data||[]).map(_mapCentroRow);
+  datosListos = true;
   await cargarRegistrosDesdeNube();
   history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
   histIdx = 0;
@@ -1913,6 +1925,7 @@ function _mapCentroRow(row){
 }
 async function cargarLotesCentrosDesdeNube(){
   if(!sb) return;
+  datosListos = false;
   try{
     await cargarEtapasDesdeNube();
     var lotesRes   = await sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden');
@@ -1924,10 +1937,12 @@ async function cargarLotesCentrosDesdeNube(){
     if(lotesRows.length===0 && centrosRows.length===0 && totalRowsCount===0){
       // Primer uso: no hay nada en la nube todavía — sembramos con
       // los valores iniciales que trae el HTML, en la primera etapa.
+      datosListos = true;
       await _guardarLotesCentrosAhora();
     } else {
       lotes   = lotesRows.map(_mapLoteRow);
       centros = centrosRows.map(_mapCentroRow);
+      datosListos = true;
     }
   }catch(e){
     console.error('Error cargando lotes/centros desde la nube', e);
@@ -1942,18 +1957,29 @@ async function cargarLotesCentrosDesdeNube(){
 }
 async function _guardarLotesCentrosAhora(){
   if(!sb || !etapaActivaId) return;
+  if(!datosListos){
+    console.warn('Guardado de lotes/centros bloqueado: los datos de la etapa activa todavía no terminaban de cargar.');
+    return;
+  }
+  // Se toma una foto de todo (etapa destino + datos) ANTES del primer
+  // await, para que si algo más cambia etapaActivaId/lotes/centros
+  // mientras este guardado está en vuelo, no se mezclen datos de dos
+  // etapas distintas.
+  var etapaAlGuardar = etapaActivaId;
+  var lotesAlGuardar = lotes;
+  var centrosAlGuardar = centros;
   try{
-    await sb.from('loteo_lotes').delete().eq('etapa_id', etapaActivaId);
-    await sb.from('loteo_centros').delete().eq('etapa_id', etapaActivaId);
-    if(lotes.length){
-      await sb.from('loteo_lotes').insert(lotes.map(function(l,i){
-        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i, etapa_id:etapaActivaId };
+    await sb.from('loteo_lotes').delete().eq('etapa_id', etapaAlGuardar);
+    await sb.from('loteo_centros').delete().eq('etapa_id', etapaAlGuardar);
+    if(lotesAlGuardar.length){
+      await sb.from('loteo_lotes').insert(lotesAlGuardar.map(function(l,i){
+        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i, etapa_id:etapaAlGuardar };
       }));
     }
-    if(centros.length){
-      await sb.from('loteo_centros').insert(centros.map(function(c,i){
+    if(centrosAlGuardar.length){
+      await sb.from('loteo_centros').insert(centrosAlGuardar.map(function(c,i){
         return { nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros,
-          subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaActivaId };
+          subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaAlGuardar };
       }));
     }
   }catch(e){
@@ -2596,6 +2622,92 @@ async function initRegistroPanel(){
   renderRegistrosGenerales();
   renderSummary();
   buildComparativa();
+  renderResumenCentrosDeCosto();
+}
+
+/* ---- RESUMEN POR CENTRO DE COSTO: consolidado + desglose por etapa ---- */
+function _tablaResumenCentros(porCentro, total){
+  var filas=Object.keys(porCentro).map(function(nombre){return {nombre:nombre, monto:porCentro[nombre]};});
+  filas.sort(function(a,b){return b.monto-a.monto;});
+  if(filas.length===0){
+    return '<div class="cot-empty" style="padding:16px">Sin gastos registrados</div>';
+  }
+  var rows=filas.map(function(f){
+    var pct=total>0?(f.monto/total*100):0;
+    return `<tr>
+      <td style="text-align:left">${centroBadge(f.nombre)}</td>
+      <td style="text-align:right;font-weight:500">${f1(f.monto)} UF</td>
+      <td style="text-align:right" class="muted">${f1(pct)}%</td>
+    </tr>`;
+  }).join('');
+  return `<table class="ft res" style="margin-bottom:1rem">
+    <colgroup><col style="width:50%"><col style="width:25%"><col style="width:25%"></colgroup>
+    <thead><tr><th style="text-align:left">Centro de costo</th><th>Monto gastado</th><th>% del total</th></tr></thead>
+    <tbody>${rows}
+      <tr class="total-row"><td>Total</td><td style="text-align:right">${f1(total)} UF</td><td style="text-align:right">100,0%</td></tr>
+    </tbody>
+  </table>`;
+}
+
+async function renderResumenCentrosDeCosto(){
+  var wrap=document.getElementById('resumen-centros-wrap');
+  if(!wrap) return;
+  wrap.innerHTML='<div style="padding:16px;text-align:center;color:var(--color-text-tertiary)">Cargando resumen…</div>';
+
+  var regRes=await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id');
+  var todos=regRes.data||[];
+
+  var porCentroTotal={}, totalGeneral=0;
+  var porEtapa={}; // etapaId -> {porCentro:{}, total:0}
+  var porCentroGeneral={}, totalGastoGeneral=0;
+
+  todos.forEach(function(r){
+    var monto=Number(r.monto);
+    porCentroTotal[r.centro]=(porCentroTotal[r.centro]||0)+monto;
+    totalGeneral+=monto;
+    if(r.etapa_id){
+      if(!porEtapa[r.etapa_id]) porEtapa[r.etapa_id]={porCentro:{}, total:0};
+      porEtapa[r.etapa_id].porCentro[r.centro]=(porEtapa[r.etapa_id].porCentro[r.centro]||0)+monto;
+      porEtapa[r.etapa_id].total+=monto;
+    } else {
+      porCentroGeneral[r.centro]=(porCentroGeneral[r.centro]||0)+monto;
+      totalGastoGeneral+=monto;
+    }
+  });
+
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+
+  var html=`
+    <div class="section-hdr res">
+      <i class="ti ti-chart-pie" style="font-size:15px;color:#3B6D11"></i>
+      <span class="shdr-title res">Resumen consolidado por centro de costo</span>
+      <span class="shdr-badge res">${f1(totalGeneral)} UF</span>
+    </div>
+    ${_tablaResumenCentros(porCentroTotal, totalGeneral)}`;
+
+  if(totalGastoGeneral>0){
+    html+=`
+      <div class="section-hdr" style="background:#F1EFE8;border:0.5px solid #D3D1C7;margin-top:1rem">
+        <i class="ti ti-building-skyscraper" style="font-size:15px;color:#5F5E5A"></i>
+        <span class="shdr-title" style="color:#2C2C2A">Desglose — Gasto General del proyecto</span>
+        <span class="shdr-badge" style="background:#5F5E5A;color:#fff">${f1(totalGastoGeneral)} UF</span>
+      </div>
+      ${_tablaResumenCentros(porCentroGeneral, totalGastoGeneral)}`;
+  }
+
+  etapasOrdenadas.forEach(function(e){
+    var datos=porEtapa[e.id];
+    if(!datos || datos.total<=0) return;
+    html+=`
+      <div class="section-hdr" style="background:#E6F1FB;border:0.5px solid #B5D4F4;margin-top:1rem">
+        <i class="ti ti-layout-list" style="font-size:15px;color:#0C447C"></i>
+        <span class="shdr-title" style="color:#0C447C">Desglose — ${e.nombre}</span>
+        <span class="shdr-badge" style="background:#0C447C;color:#fff">${f1(datos.total)} UF</span>
+      </div>
+      ${_tablaResumenCentros(datos.porCentro, datos.total)}`;
+  });
+
+  wrap.innerHTML=html;
 }
 
 function renderRegistrosGenerales(){
