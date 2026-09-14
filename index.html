@@ -1530,7 +1530,7 @@ async function mostrarConsolidado(){
     var tot=calcCentro(c);
     if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[], general:null};
     centrosPorNombre[c.nombre].total += tot;
-    centrosPorNombre[c.nombre].general = { id:row.id, items:c.items||[], total:tot, expandido:false };
+    centrosPorNombre[c.nombre].general = { id:row.id, items:c.items||[], tieneSubcentros:c.tieneSubcentros, subcentros:c.subcentros||[], total:tot, expandido:false };
   });
 
   var regRes = await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id');
@@ -1706,22 +1706,55 @@ function renderConsolidadoCostos(){
           <td style="text-align:center">${fReal(g.real)}</td>
           <td style="text-align:center">${fVar(g.total,g.real)}</td></tr>`;
         if(g.expandido){
-          g.items.forEach(function(it,ii){
-            var tot=calcItem(it);
-            html+=`<tr class="subitem-row">
-              <td style="padding-left:46px">
-                <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:110px" data-minw="110" oninput="autoGrowNI(this)" onchange="editarItemGeneral(${g.id},${ii},'nombre',this.value)"/>
-                <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:52px" onchange="editarItemGeneral(${g.id},${ii},'cantidad',+this.value||0)"/> ×
-                <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:60px" onchange="editarItemGeneral(${g.id},${ii},'unitario',+this.value||0)"/> UF
-              </td>
-              <td class="neg">${fval(tot)}</td><td></td>
-              <td style="text-align:right"><button class="icon-btn" onclick="eliminarItemGeneral(${g.id},${ii})" title="Eliminar ítem"><i class="ti ti-x" style="font-size:12px"></i></button></td>
-            </tr>`;
-          });
-          html+=`<tr><td colspan="4" style="padding:5px 46px">
-            <button class="add-btn cos-add" onclick="agregarItemGeneral(${g.id})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
-            <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
-          </td></tr>`;
+          if(g.tieneSubcentros && g.subcentros && g.subcentros.length){
+            g.subcentros.forEach(function(sc,si){
+              var scTot=calcSubcentro(sc);
+              html+=`<tr class="subitem-row">
+                <td style="padding-left:46px;color:var(--color-text-secondary)">
+                  <button class="sub-toggle" onclick="toggleGeneralSubcentro(${ci},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
+                  <input class="ci ni" value="${(sc.nombre||'').replace(/"/g,'&quot;')}" style="width:100px;font-size:11px" data-minw="100" oninput="autoGrowNI(this)" onchange="editGeneralSubcentroNombre(${ci},${si},this.value)"/>
+                  <button class="icon-btn" onclick="delGeneralSubcentro(${ci},${si})" title="Eliminar subpartida"><i class="ti ti-trash" style="font-size:10px"></i></button>
+                </td>
+                <td class="neg">${fval(scTot)}</td><td></td><td></td></tr>`;
+              if(sc.expandido){
+                (sc.items||[]).forEach(function(it,ii){
+                  var tot=calcItem(it);
+                  html+=`<tr class="subitem-row">
+                    <td style="padding-left:66px">
+                      <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:100px;font-size:11px" data-minw="100" oninput="autoGrowNI(this)" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'nombre',this.value)"/>
+                      <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:48px" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'cantidad',+this.value||0)"/> ×
+                      <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:56px" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'unitario',+this.value||0)"/> UF
+                    </td>
+                    <td class="neg">${fval(tot)}</td><td></td>
+                    <td style="text-align:right"><button class="icon-btn" onclick="delGeneralSubItem(${ci},${si},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button></td>
+                  </tr>`;
+                });
+                html+=`<tr><td colspan="4" style="padding:4px 66px"><button class="add-btn cos-add" onclick="addGeneralSubItem(${ci},${si})"><i class="ti ti-plus" style="font-size:10px"></i> Agregar ítem</button></td></tr>`;
+              }
+            });
+            html+=`<tr><td colspan="4" style="padding:4px 46px">
+              <button class="add-btn cos-add" onclick="addGeneralSubcentro(${ci})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
+              <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
+            </td></tr>`;
+          } else {
+            g.items.forEach(function(it,ii){
+              var tot=calcItem(it);
+              html+=`<tr class="subitem-row">
+                <td style="padding-left:46px">
+                  <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:110px" data-minw="110" oninput="autoGrowNI(this)" onchange="editarItemGeneral(${g.id},${ii},'nombre',this.value)"/>
+                  <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:52px" onchange="editarItemGeneral(${g.id},${ii},'cantidad',+this.value||0)"/> ×
+                  <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:60px" onchange="editarItemGeneral(${g.id},${ii},'unitario',+this.value||0)"/> UF
+                </td>
+                <td class="neg">${fval(tot)}</td><td></td>
+                <td style="text-align:right"><button class="icon-btn" onclick="eliminarItemGeneral(${g.id},${ii})" title="Eliminar ítem"><i class="ti ti-x" style="font-size:12px"></i></button></td>
+              </tr>`;
+            });
+            html+=`<tr><td colspan="4" style="padding:5px 46px">
+              <button class="add-btn cos-add" onclick="agregarItemGeneral(${g.id})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
+              <button class="add-btn cos-add" onclick="addGeneralSubcentro(${ci})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
+              <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
+            </td></tr>`;
+          }
         }
       }
     }
@@ -1801,6 +1834,65 @@ async function eliminarCentroGeneral(centroId){
   if(!confirm('¿Eliminar esta categoría de gasto general completa?')) return;
   await sb.from('loteo_centros').delete().eq('id',centroId);
   await mostrarConsolidado();
+}
+
+/* --- Sub-costos anidados dentro de un gasto general --- */
+async function _guardarCentroGeneral(g){
+  return sb.from('loteo_centros').update({
+    tiene_subcentros:g.tieneSubcentros, subcentros:g.subcentros||[], items:g.items||[]
+  }).eq('id', g.id);
+}
+function _recalcGeneralTotal(c){
+  c.general.total = calcCentro(c.general);
+}
+function toggleGeneralSubcentro(ci,si){
+  consolidadoCostos[ci].general.subcentros[si].expandido=!consolidadoCostos[ci].general.subcentros[si].expandido;
+  renderConsolidadoCostos();
+}
+async function addGeneralSubcentro(ci){
+  var g=consolidadoCostos[ci].general;
+  g.subcentros=g.subcentros||[];
+  g.subcentros.push({nombre:'Nueva subpartida', expandido:true, items:[{nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0}]});
+  g.tieneSubcentros=true;
+  await _guardarCentroGeneral(g);
+  _recalcGeneralTotal(consolidadoCostos[ci]);
+  renderConsolidadoCostos();
+}
+async function delGeneralSubcentro(ci,si){
+  var g=consolidadoCostos[ci].general;
+  if(g.subcentros.length<=1) return;
+  g.subcentros.splice(si,1);
+  await _guardarCentroGeneral(g);
+  _recalcGeneralTotal(consolidadoCostos[ci]);
+  renderConsolidadoCostos();
+}
+async function editGeneralSubcentroNombre(ci,si,valor){
+  var g=consolidadoCostos[ci].general;
+  g.subcentros[si].nombre=valor;
+  await _guardarCentroGeneral(g);
+  renderConsolidadoCostos();
+}
+async function addGeneralSubItem(ci,si){
+  var g=consolidadoCostos[ci].general;
+  g.subcentros[si].items.push({nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0});
+  await _guardarCentroGeneral(g);
+  _recalcGeneralTotal(consolidadoCostos[ci]);
+  renderConsolidadoCostos();
+}
+async function delGeneralSubItem(ci,si,ii){
+  var g=consolidadoCostos[ci].general;
+  if(g.subcentros[si].items.length<=1) return;
+  g.subcentros[si].items.splice(ii,1);
+  await _guardarCentroGeneral(g);
+  _recalcGeneralTotal(consolidadoCostos[ci]);
+  renderConsolidadoCostos();
+}
+async function editGeneralSubItemCampo(ci,si,ii,campo,valor){
+  var g=consolidadoCostos[ci].general;
+  g.subcentros[si].items[ii][campo]=valor;
+  await _guardarCentroGeneral(g);
+  _recalcGeneralTotal(consolidadoCostos[ci]);
+  renderConsolidadoCostos();
 }
 
 /* ═══════════════════════════════════════════════════════════════
