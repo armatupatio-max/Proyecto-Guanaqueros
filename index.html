@@ -1515,25 +1515,43 @@ async function mostrarConsolidado(){
     var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', e.id).order('orden');
     (centrosRes.data||[]).map(_mapCentroRow).forEach(function(c){
       var tot=calcCentro(c);
-      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[]};
+      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[], general:null};
       centrosPorNombre[c.nombre].total += tot;
       centrosPorNombre[c.nombre].porEtapa.push({etapaId:e.id, etapaNombre:e.nombre, total:tot, centro:c, expandido:false});
     });
   }
 
-  var regRes = await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id').not('etapa_id','is',null);
+  // Gastos generales del proyecto (no atados a ninguna etapa) — se
+  // fusionan por nombre igual que los de etapa, y se agregan como una
+  // línea "Gasto General" debajo del desglose por etapa de ese centro.
+  var generalRes = await sb.from('loteo_centros').select('*').is('etapa_id', null).order('orden');
+  (generalRes.data||[]).forEach(function(row){
+    var c=_mapCentroRow(row);
+    var tot=calcCentro(c);
+    if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[], general:null};
+    centrosPorNombre[c.nombre].total += tot;
+    centrosPorNombre[c.nombre].general = { id:row.id, items:c.items||[], total:tot, expandido:false };
+  });
+
+  var regRes = await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id');
   var realPorNombre = {};
   var realPorEtapaCentro = {};
+  var realGeneralPorNombre = {};
   (regRes.data||[]).forEach(function(r){
     realPorNombre[r.centro] = (realPorNombre[r.centro]||0) + Number(r.monto);
-    var key=r.etapa_id+'|'+r.centro;
-    realPorEtapaCentro[key] = (realPorEtapaCentro[key]||0) + Number(r.monto);
+    if(r.etapa_id){
+      var key=r.etapa_id+'|'+r.centro;
+      realPorEtapaCentro[key] = (realPorEtapaCentro[key]||0) + Number(r.monto);
+    } else {
+      realGeneralPorNombre[r.centro] = (realGeneralPorNombre[r.centro]||0) + Number(r.monto);
+    }
   });
 
   consolidadoCostos = Object.values(centrosPorNombre);
   consolidadoCostos.forEach(function(c){
     c.real = realPorNombre[c.nombre]||0;
     c.porEtapa.forEach(function(pe){ pe.real = realPorEtapaCentro[pe.etapaId+'|'+c.nombre]||0; });
+    if(c.general) c.general.real = realGeneralPorNombre[c.nombre]||0;
   });
 
   renderConsolidado();
@@ -1678,8 +1696,39 @@ function renderConsolidadoCostos(){
           }
         }
       });
+      if(c.general){
+        var g=c.general;
+        html+=`<tr class="subcentro-row" style="background:#F1EFE8">
+          <td style="padding-left:22px">
+            <button class="sub-toggle" onclick="toggleConsCosGeneral(${ci})">${g.expandido?'−':'+'}</button>
+            <span class="tipo-badge tgen" style="font-size:10px">Gasto General</span></td>
+          <td class="neg">${fval(g.total)}</td>
+          <td style="text-align:center">${fReal(g.real)}</td>
+          <td style="text-align:center">${fVar(g.total,g.real)}</td></tr>`;
+        if(g.expandido){
+          g.items.forEach(function(it,ii){
+            var tot=calcItem(it);
+            html+=`<tr class="subitem-row">
+              <td style="padding-left:46px">
+                <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:110px" data-minw="110" oninput="autoGrowNI(this)" onchange="editarItemGeneral(${g.id},${ii},'nombre',this.value)"/>
+                <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:52px" onchange="editarItemGeneral(${g.id},${ii},'cantidad',+this.value||0)"/> ×
+                <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:60px" onchange="editarItemGeneral(${g.id},${ii},'unitario',+this.value||0)"/> UF
+              </td>
+              <td class="neg">${fval(tot)}</td><td></td>
+              <td style="text-align:right"><button class="icon-btn" onclick="eliminarItemGeneral(${g.id},${ii})" title="Eliminar ítem"><i class="ti ti-x" style="font-size:12px"></i></button></td>
+            </tr>`;
+          });
+          html+=`<tr><td colspan="4" style="padding:5px 46px">
+            <button class="add-btn cos-add" onclick="agregarItemGeneral(${g.id})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
+            <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
+          </td></tr>`;
+        }
+      }
     }
   });
+  html+=`<tr><td colspan="4" style="padding:7px 10px;border-top:0.5px solid var(--color-border-tertiary)">
+    <button class="add-btn cos-add" onclick="agregarGastoGeneralConsolidado()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto general</button>
+  </td></tr>`;
   html+=`<tr class="total-row"><td>Total costos</td><td class="neg">${fval(totCos)}</td>
     <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
     <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
@@ -1697,6 +1746,61 @@ function toggleConsCosSub(ci,pei,si){
   var sc=consolidadoCostos[ci].porEtapa[pei].centro.subcentros[si];
   sc.expandido=!sc.expandido;
   renderConsolidadoCostos();
+}
+function toggleConsCosGeneral(ci){
+  consolidadoCostos[ci].general.expandido=!consolidadoCostos[ci].general.expandido;
+  renderConsolidadoCostos();
+}
+
+async function agregarGastoGeneralConsolidado(){
+  var nombre=prompt('Nombre del centro de costo (puede ser uno que ya existe en las etapas, ej. "Urbanización", para sumarle un gasto general ahí, o uno nuevo, ej. "Arquitectura" o "Ingeniería"):');
+  if(!nombre||!nombre.trim()) return;
+  nombre=nombre.trim();
+  var existente=consolidadoCostos.find(function(c){return c.nombre===nombre;});
+  if(existente && existente.general){
+    alert('Ya existe un gasto general para "'+nombre+'". Ábrelo (+) para editarlo.');
+    return;
+  }
+  var cls=existente ? existente.cls : nextCls(consolidadoCostos.map(function(c){return {cls:c.cls};}));
+  var ins=await sb.from('loteo_centros').insert({
+    nombre:nombre, etapa_id:null, cls:cls, tiene_subcentros:false,
+    items:[{nombre:'Nuevo ítem', cantidad:1, unitario:0, und:'UN'}], subcentros:[], orden:0
+  }).select().single();
+  if(ins.error){ alert('No se pudo crear: '+ins.error.message); return; }
+  await mostrarConsolidado();
+}
+
+async function editarItemGeneral(centroId, idx, campo, valor){
+  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
+  if(!c) return;
+  c.general.items[idx][campo]=valor;
+  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
+  c.general.total=c.general.items.reduce(function(a,it){return a+(it.cantidad||0)*(it.unitario||0);},0);
+  c.total=c.porEtapa.reduce(function(a,pe){return a+pe.total;},0)+c.general.total;
+  renderConsolidadoCostos();
+}
+
+async function agregarItemGeneral(centroId){
+  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
+  if(!c) return;
+  c.general.items.push({nombre:'Nuevo ítem', cantidad:1, unitario:0, und:'UN'});
+  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
+  renderConsolidadoCostos();
+}
+
+async function eliminarItemGeneral(centroId, idx){
+  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
+  if(!c) return;
+  if(c.general.items.length<=1){ alert('Debe quedar al menos un ítem — si ya no necesitas esta categoría, elimínala completa.'); return; }
+  c.general.items.splice(idx,1);
+  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
+  await mostrarConsolidado();
+}
+
+async function eliminarCentroGeneral(centroId){
+  if(!confirm('¿Eliminar esta categoría de gasto general completa?')) return;
+  await sb.from('loteo_centros').delete().eq('id',centroId);
+  await mostrarConsolidado();
 }
 
 /* ═══════════════════════════════════════════════════════════════
