@@ -1762,10 +1762,9 @@ function renderConsolidadoCostos(){
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   var totalGP=gastosProyecto.reduce(function(a,g){return a+calcGastoProyecto(g);},0);
   html+=`<tr class="partida-row">
-    <td><button class="toggle-btn" onclick="toggleGastosProyectoGroup()">${gastosProyectoGroupExpandido?'−':'+'}</button>
-      <span class="tipo-badge tgen">Gastos de proyecto</span></td>
+    <td><span class="tipo-badge tgen">Gastos de proyecto</span></td>
     <td class="neg">${fval(totalGP)}</td><td></td><td></td></tr>`;
-  if(gastosProyectoGroupExpandido){
+  {
     if(gastosProyecto.length===0){
       html+='<tr class="subcentro-row"><td colspan="4" style="padding-left:22px;color:var(--color-text-tertiary)">Sin gastos de proyecto agregados</td></tr>';
     }
@@ -1864,15 +1863,12 @@ function renderConsolidadoCostos(){
     <button class="btn-primary" style="height:28px;padding:0 10px;font-size:11px" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto de proyecto</button>
   </td></tr>`;
 
-  html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td><td></td><td></td></tr>`;
+  html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td>
+    <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
+    <td style="text-align:center">${fVar(totCos+totalGP,totReal)}</td></tr>`;
 
   tb.innerHTML=html;
   tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
-}
-let gastosProyectoGroupExpandido = true;
-function toggleGastosProyectoGroup(){
-  gastosProyectoGroupExpandido=!gastosProyectoGroupExpandido;
-  renderConsolidadoCostos();
 }
 function toggleConsCosCentro(ci){
   consolidadoCostos[ci].expandido=!consolidadoCostos[ci].expandido;
@@ -2140,7 +2136,7 @@ function _mapLoteRow(row){
   return { nombre: row.nombre, unidades: row.unidades, m2: Number(row.m2), ufm2: Number(row.ufm2) };
 }
 function _mapCentroRow(row){
-  return { nombre: row.nombre, cls: row.cls, expandido: false,
+  return { nombre: row.nombre, cls: row.cls, expandido: row.nombre==='Gastos de Proyecto',
     tieneSubcentros: row.tiene_subcentros, subcentros: row.subcentros || [], items: row.items || [] };
 }
 async function cargarLotesCentrosDesdeNube(){
@@ -2622,19 +2618,22 @@ function buildCos(){
         <td style="text-align:center">${fVar(totUF,real)}</td>
         <td></td>`;
       tb.appendChild(pr);
-      (c.subcentros||[]).forEach(function(sc){
+      (c.subcentros||[]).forEach(function(sc,si){
         const scTot=calcSubcentro(sc);
+        const scExp=sc.expandido;
         const scr=document.createElement('tr');
         scr.className='subcentro-row'+(exp?'':' hidden');
         scr.innerHTML=`
-          <td style="padding-left:22px;color:var(--color-text-secondary);font-size:12px;font-weight:500">${sc.nombre}</td>
+          <td style="padding-left:22px">
+              <button class="sub-toggle" onclick="toggleGastoProyectoSubEtapa(${ci},${si})">${scExp?'−':'+'}</button>
+              <span style="color:var(--color-text-secondary);font-size:12px;font-weight:500">${sc.nombre}</span></td>
           <td class="muted">—</td><td class="muted">—</td>
           <td class="neg">${fval(scTot)}</td><td></td><td></td><td></td>`;
         tb.appendChild(scr);
         sc.items.forEach(function(it){
           const tot=calcItem(it);
           const itr=document.createElement('tr');
-          itr.className='subitem-row'+(exp?'':' hidden');
+          itr.className='subitem-row'+((exp&&scExp)?'':' hidden');
           itr.innerHTML=`
             <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">
                 <i class="ti ti-corner-down-right" style="font-size:10px;margin-right:3px"></i>
@@ -2887,6 +2886,7 @@ function delSubItem(ci,si,ii){
 }
 function toggleIng(){ingExpandido=!ingExpandido;buildIng()}
 function toggleCentro(ci){centros[ci].expandido=!centros[ci].expandido;buildCos()}
+function toggleGastoProyectoSubEtapa(ci,si){centros[ci].subcentros[si].expandido=!centros[ci].subcentros[si].expandido;buildCos()}
 function addLote(){lotes.push({nombre:'Nuevo tipo',unidades:1,m2:500,ufm2:3.0});ingExpandido=true;snap();recalc()}
 function delLote(i){if(lotes.length<=1)return;lotes.splice(i,1);snap();recalc()}
 function addCentro(){centros.push({nombre:'Nuevo centro',cls:nextCls(centros),expandido:true,tieneSubcentros:true,subcentros:[{nombre:'Sub-costo 1',expandido:true,items:[{nombre:'Ítem 1',und:'UN',cantidad:1,unitario:0}]}]});snap();recalc()}
