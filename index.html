@@ -1864,6 +1864,8 @@ function renderConsolidadoCostos(){
     <button class="btn-primary" style="height:28px;padding:0 10px;font-size:11px" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto de proyecto</button>
   </td></tr>`;
 
+  html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td><td></td><td></td></tr>`;
+
   tb.innerHTML=html;
   tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
 }
@@ -1957,29 +1959,55 @@ function _tipoProrrateoLabel(tipo){
 // Reconstruye la partida "Gastos de Proyecto" dentro de cada etapa a
 // partir de la lista actual de gastos de proyecto. Se regenera entera
 // cada vez (no se parchea), así que editar/eliminar un gasto de
-// proyecto se refleja solo en todas las etapas.
+// proyecto se refleja solo en todas las etapas. Cada gasto que le
+// toca a la etapa aparece ahí como su propio sub-costo, con el mismo
+// desglose de ítems que tiene en Flujo de Proyecto pero con los
+// valores escalados según el % de incidencia que le corresponde a
+// esa etapa (ej. si a la etapa le toca 40% de Ingeniería, cada ítem
+// de Ingeniería aparece acá al 40% de su valor unitario).
+function _itemsPlanosGasto(g){
+  if(g.tieneSubcentros && g.subcentros){
+    var out=[];
+    g.subcentros.forEach(function(sc){
+      sc.items.forEach(function(it){
+        out.push({ nombre: sc.nombre+' — '+it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario });
+      });
+    });
+    return out;
+  }
+  return (g.items||[]).map(function(it){ return { nombre:it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario }; });
+}
 async function recalcularGastosDeProyecto(){
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   for(const e of etapasOrdenadas){
-    var items=gastosProyecto.map(function(g){
+    var subcentros=[];
+    gastosProyecto.forEach(function(g){
+      var totalG=calcGastoProyecto(g);
+      if(totalG<=0.0001) return;
       var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
-      var monto=asign[e.id]||0;
+      var montoE=asign[e.id]||0;
+      if(montoE<=0.0001) return;
+      var frac=montoE/totalG;
       var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
-      return { nombre: g.nombre+' — '+f1(pct)+'% de incidencia', cantidad:1, unitario:monto, und:'UN' };
-    }).filter(function(it){ return it.unitario>0.0001; });
+      var itemsEscalados=_itemsPlanosGasto(g).map(function(it){
+        return { nombre:it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario*frac };
+      }).filter(function(it){ return it.cantidad*it.unitario>0.0001; });
+      if(itemsEscalados.length===0) return;
+      subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia', expandido:false, items:itemsEscalados });
+    });
 
     var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').limit(1);
     var existente=res.data && res.data[0];
-    if(items.length===0){
+    if(subcentros.length===0){
       if(existente) await sb.from('loteo_centros').delete().eq('id', existente.id);
       continue;
     }
     if(existente){
-      await sb.from('loteo_centros').update({items:items}).eq('id', existente.id);
+      await sb.from('loteo_centros').update({tiene_subcentros:true, subcentros:subcentros, items:[]}).eq('id', existente.id);
     } else {
       await sb.from('loteo_centros').insert({
-        nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:false,
-        items:items, subcentros:[], orden:999
+        nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:true,
+        items:[], subcentros:subcentros, orden:999
       });
     }
   }
@@ -2577,7 +2605,47 @@ function buildCos(){
     const totCant=c.items?c.items.reduce((a,it)=>a+it.cantidad,0):0;
     const unitProm=totCant?totUF/totCant:0;
     const real=costoRealCentro(c.nombre);
+    const esGastosProyecto = c.nombre==='Gastos de Proyecto';
     const pr=document.createElement('tr');pr.className='partida-row';
+    if(esGastosProyecto){
+      // Reflejo automático de Flujo de Proyecto — de solo lectura acá,
+      // se agrega/edita/elimina desde ahí (recalcularGastosDeProyecto
+      // regenera esto entero cada vez que algo cambia).
+      pr.innerHTML=`
+        <td><button class="toggle-btn" onclick="toggleCentro(${ci})">${exp?'−':'+'}</button>
+            <span class="tipo-badge ${c.cls||'tgen'}">${c.nombre}</span>
+            <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(prorrateado desde Flujo de Proyecto)</span></td>
+        <td class="muted">—</td>
+        <td class="muted">—</td>
+        <td class="neg">${fval(totUF)}</td>
+        <td style="text-align:center">${fReal(real)}</td>
+        <td style="text-align:center">${fVar(totUF,real)}</td>
+        <td></td>`;
+      tb.appendChild(pr);
+      (c.subcentros||[]).forEach(function(sc){
+        const scTot=calcSubcentro(sc);
+        const scr=document.createElement('tr');
+        scr.className='subcentro-row'+(exp?'':' hidden');
+        scr.innerHTML=`
+          <td style="padding-left:22px;color:var(--color-text-secondary);font-size:12px;font-weight:500">${sc.nombre}</td>
+          <td class="muted">—</td><td class="muted">—</td>
+          <td class="neg">${fval(scTot)}</td><td></td><td></td><td></td>`;
+        tb.appendChild(scr);
+        sc.items.forEach(function(it){
+          const tot=calcItem(it);
+          const itr=document.createElement('tr');
+          itr.className='subitem-row'+(exp?'':' hidden');
+          itr.innerHTML=`
+            <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">
+                <i class="ti ti-corner-down-right" style="font-size:10px;margin-right:3px"></i>
+                ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''} × ${f1(it.unitario)} UF)</span></td>
+            <td></td><td></td>
+            <td class="neg">${fval(tot)}</td><td></td><td></td><td></td>`;
+          tb.appendChild(itr);
+        });
+      });
+      return;
+    }
     pr.innerHTML=`
       <td><button class="toggle-btn" onclick="toggleCentro(${ci})">${exp?'−':'+'}</button>
           <input class="ci ni" value="${c.nombre}" style="width:110px;font-weight:500;background:var(--color-background-secondary);border-color:transparent" data-minw="110" oninput="autoGrowNI(this)" onchange="centros[${ci}].nombre=this.value;snap();recalc()"/></td>
