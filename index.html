@@ -882,7 +882,8 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
       <thead><tr><th style="text-align:left">Etapa</th><th>m² útiles proyectados</th></tr></thead>
       <tbody id="ap-m2-body"></tbody>
     </table>
-    <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:6px">Editable a mano — el proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil" en Flujo de Proyecto.</div>
+    <div id="ap-m2-btn-wrap" style="margin-top:8px"></div>
+    <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:6px">El proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil" en Flujo de Proyecto.</div>
   </div>
 
   <!-- Dentro de una carpeta: explorador simple -->
@@ -1206,6 +1207,27 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
       <button class="btn-cancel" onclick="cerrarModalGastoProyecto()">Cancelar</button>
       <button class="btn-save" style="background:#5F5E5A" onclick="guardarGastoProyecto()">
         <i class="ti ti-device-floppy" style="font-size:13px;margin-right:4px"></i> Guardar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL PRORRATEAR GASTOS DE PROYECTO -->
+<div class="casa-modal-overlay hidden" id="gp-prorrateo-modal-overlay">
+  <div class="casa-modal-box">
+    <div class="cot-modal-hdr">
+      <i class="ti ti-adjustments-horizontal" style="font-size:16px;color:#5F5E5A"></i>
+      <span class="cot-modal-hdr-title">Prorratear gastos de proyecto</span>
+      <button class="modal-close" onclick="cerrarModalProrratearGastos()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="cot-modal-body">
+      <div style="font-size:11px;color:var(--color-text-tertiary);margin-bottom:10px">Define la forma de prorrateo de cada gasto y presiona "Guardar cambios" una sola vez al final.</div>
+      <div id="gp-prorrateo-body"></div>
+    </div>
+    <div class="cot-modal-footer">
+      <button class="btn-cancel" onclick="cerrarModalProrratearGastos()">Cancelar</button>
+      <button class="btn-save" style="background:#5F5E5A" onclick="guardarProrrateoGastos()">
+        <i class="ti ti-device-floppy" style="font-size:13px;margin-right:4px"></i> Guardar cambios
       </button>
     </div>
   </div>
@@ -1788,7 +1810,6 @@ function renderConsolidadoCostos(){
         <td class="neg">${fval(montoG)}</td>
         <td></td>
         <td style="text-align:center">
-          <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar forma de prorrateo"><i class="ti ti-pencil" style="font-size:11px"></i></button>
           <button class="icon-btn" onclick="eliminarGastoProyecto(${g.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:11px"></i></button>
         </td></tr>`;
       if(g.expandido){
@@ -1871,6 +1892,7 @@ function renderConsolidadoCostos(){
   }
   html+=`<tr><td colspan="4" style="padding:10px 4px 4px 22px">
     <button class="btn-primary" style="height:28px;padding:0 10px;font-size:11px" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto de proyecto</button>
+    <button class="add-btn" style="height:28px;padding:0 10px;font-size:11px;margin-left:6px" onclick="abrirModalProrratearGastos()"><i class="ti ti-adjustments-horizontal" style="font-size:11px"></i> Prorratear gastos</button>
   </td></tr>`;
 
   html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td>
@@ -1904,7 +1926,6 @@ function toggleConsCosSub(ci,pei,si){
    ingresa a mano, se calcula sumando el desglose (calcGastoProyecto).
    ═══════════════════════════════════════════════════════════════ */
 let gastosProyecto = [];
-let editandoGastoProyectoId = null;
 
 function _mapGastoProyectoRow(row){
   return { id:row.id, nombre:row.nombre, tipoProrrateo:row.tipo_prorrateo, etapaEspecificaId:row.etapa_especifica_id,
@@ -1988,7 +2009,18 @@ function _itemsPlanosGasto(g){
   }
   return (g.items||[]).map(function(it){ return { nombre:it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario }; });
 }
-async function recalcularGastosDeProyecto(){
+// Serializado con una cadena de promesas: si dos ediciones disparan
+// un recalculo casi al mismo tiempo, cada llamada hace un SELECT y
+// luego un INSERT/UPDATE por etapa — si corrieran en paralelo, dos
+// llamadas podrían no ver la fila que la otra recién insertó y crear
+// filas "Gastos de Proyecto" duplicadas por etapa (dejando algunas
+// desactualizadas). Encolar las llamadas evita esa condición de carrera.
+let _recalcGPChain = Promise.resolve();
+function recalcularGastosDeProyecto(){
+  _recalcGPChain = _recalcGPChain.then(_recalcularGastosDeProyectoImpl).catch(function(e){ console.error('Error recalculando gastos de proyecto', e); });
+  return _recalcGPChain;
+}
+async function _recalcularGastosDeProyectoImpl(){
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   for(const e of etapasOrdenadas){
     var subcentros=[];
@@ -2007,14 +2039,20 @@ async function recalcularGastosDeProyecto(){
       subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia ('+_tipoProrrateoLabel(g.tipoProrrateo)+')', expandido:false, items:itemsEscalados });
     });
 
-    var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').limit(1);
-    var existente=res.data && res.data[0];
+    var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').order('id');
+    var filas=res.data||[];
     if(subcentros.length===0){
-      if(existente) await sb.from('loteo_centros').delete().eq('id', existente.id);
+      if(filas.length) await sb.from('loteo_centros').delete().in('id', filas.map(function(r){return r.id;}));
       continue;
     }
-    if(existente){
-      await sb.from('loteo_centros').update({tiene_subcentros:true, subcentros:subcentros, items:[]}).eq('id', existente.id);
+    if(filas.length){
+      // Actualiza la primera fila; si hubiera quedado alguna duplicada
+      // (residuo de una corrida en paralelo antes de encolar los
+      // recalculos), se elimina para que no queden filas fantasma.
+      await sb.from('loteo_centros').update({tiene_subcentros:true, subcentros:subcentros, items:[]}).eq('id', filas[0].id);
+      if(filas.length>1){
+        await sb.from('loteo_centros').delete().in('id', filas.slice(1).map(function(r){return r.id;}));
+      }
     } else {
       await sb.from('loteo_centros').insert({
         nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:true,
@@ -2029,27 +2067,79 @@ function toggleConsGastoProyecto(gi){
   renderConsolidadoCostos();
 }
 
-function abrirModalGastoProyecto(id){
-  editandoGastoProyectoId=id||null;
-  document.getElementById('gp-modal-title').textContent=id?'Editar gasto de proyecto':'Agregar gasto de proyecto';
+// Editor en lote: define la forma de prorrateo de todos los gastos de
+// proyecto a la vez y los guarda todos juntos con un solo "Guardar
+// cambios", en vez de una escritura instantánea por cada cambio (así
+// se evita disparar varios recálculos casi simultáneos mientras se
+// prueban distintas combinaciones).
+function abrirModalProrratearGastos(){
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var body=document.getElementById('gp-prorrateo-body');
+  if(gastosProyecto.length===0){
+    body.innerHTML='<div style="color:var(--color-text-tertiary);font-size:12px">No hay gastos de proyecto agregados todavía.</div>';
+  } else {
+    body.innerHTML = gastosProyecto.map(function(g,gi){
+      var etapaOpts = etapasOrdenadas.map(function(e){
+        return `<option value="${e.id}"${g.etapaEspecificaId===e.id?' selected':''}>${e.nombre}</option>`;
+      }).join('');
+      return `<div class="form-group full" style="border-bottom:0.5px solid var(--color-border-tertiary);padding-bottom:12px;margin-bottom:12px">
+        <label class="form-label" style="font-weight:600">${g.nombre}</label>
+        <select class="form-control gp-pror-tipo" data-gi="${gi}" onchange="_onGpProrTipoChange(${gi})">
+          <option value="proyecto"${g.tipoProrrateo==='proyecto'?' selected':''}>Asignar a proyecto (sin prorratear)</option>
+          <option value="m2"${g.tipoProrrateo==='m2'?' selected':''}>Por m² útil de cada etapa</option>
+          <option value="parejo"${g.tipoProrrateo==='parejo'?' selected':''}>Parejo entre todas las etapas</option>
+          <option value="etapa"${g.tipoProrrateo==='etapa'?' selected':''}>Asignar a una etapa específica</option>
+        </select>
+        <select class="form-control gp-pror-etapa" data-gi="${gi}" style="margin-top:6px;display:${g.tipoProrrateo==='etapa'?'':'none'}">${etapaOpts}</select>
+      </div>`;
+    }).join('');
+  }
+  document.getElementById('gp-prorrateo-modal-overlay').classList.remove('hidden');
+}
+function _onGpProrTipoChange(gi){
+  var tipoSel=document.querySelector('.gp-pror-tipo[data-gi="'+gi+'"]');
+  var etapaSel=document.querySelector('.gp-pror-etapa[data-gi="'+gi+'"]');
+  if(etapaSel) etapaSel.style.display = tipoSel.value==='etapa' ? '' : 'none';
+}
+function cerrarModalProrratearGastos(){
+  document.getElementById('gp-prorrateo-modal-overlay').classList.add('hidden');
+}
+async function guardarProrrateoGastos(){
+  var writes=[];
+  var tipoSels=document.querySelectorAll('.gp-pror-tipo');
+  for(const sel of tipoSels){
+    var gi=parseInt(sel.dataset.gi,10);
+    var g=gastosProyecto[gi];
+    var tipo=sel.value;
+    var etapaId=null;
+    if(tipo==='etapa'){
+      var etapaSel=document.querySelector('.gp-pror-etapa[data-gi="'+gi+'"]');
+      etapaId=parseInt(etapaSel.value,10);
+      if(!Number.isFinite(etapaId)){ alert('Selecciona a qué etapa se asigna "'+g.nombre+'".'); return; }
+    }
+    writes.push({id:g.id, tipo_prorrateo:tipo, etapa_especifica_id:etapaId});
+  }
+  for(const w of writes){
+    var r=await sb.from('loteo_gastos_proyecto').update({tipo_prorrateo:w.tipo_prorrateo, etapa_especifica_id:w.etapa_especifica_id}).eq('id', w.id);
+    if(r.error){ alert('No se pudo guardar el prorrateo: '+r.error.message); return; }
+  }
+  cerrarModalProrratearGastos();
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto();
+  await mostrarConsolidado();
+}
+
+function abrirModalGastoProyecto(){
   var selEtapa=document.getElementById('gp-etapa');
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   selEtapa.innerHTML=etapasOrdenadas.map(function(e){return `<option value="${e.id}">${e.nombre}</option>`;}).join('');
-  if(id){
-    var g=gastosProyecto.find(function(x){return x.id===id;});
-    document.getElementById('gp-nombre').value=g.nombre;
-    document.getElementById('gp-tipo').value=g.tipoProrrateo;
-    if(g.etapaEspecificaId) selEtapa.value=g.etapaEspecificaId;
-  } else {
-    document.getElementById('gp-nombre').value='';
-    document.getElementById('gp-tipo').value='proyecto';
-  }
+  document.getElementById('gp-nombre').value='';
+  document.getElementById('gp-tipo').value='proyecto';
   onTipoProrrateoChange();
   document.getElementById('gp-modal-overlay').classList.remove('hidden');
 }
 function cerrarModalGastoProyecto(){
   document.getElementById('gp-modal-overlay').classList.add('hidden');
-  editandoGastoProyectoId=null;
 }
 function onTipoProrrateoChange(){
   document.getElementById('gp-etapa-wrap').style.display=document.getElementById('gp-tipo').value==='etapa'?'':'none';
@@ -2063,17 +2153,12 @@ async function guardarGastoProyecto(){
     if(!Number.isFinite(etapaEspecificaId)){ alert('Selecciona a qué etapa se asigna este gasto.'); return; }
   }
   if(!nombre){ alert('Ingresa un nombre para el gasto.'); return; }
-  var resultado;
-  if(editandoGastoProyectoId){
-    resultado=await sb.from('loteo_gastos_proyecto').update({nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId}).eq('id', editandoGastoProyectoId);
-  } else {
-    resultado=await sb.from('loteo_gastos_proyecto').insert({
-      nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId, monto:0,
-      tiene_subcentros:true,
-      subcentros:[{nombre:'Sub-costo 1', expandido:true, items:[{nombre:'Ítem 1', und:'UN', cantidad:1, unitario:0}]}]
-    });
-  }
-  if(resultado && resultado.error){ alert('No se pudo guardar el gasto de proyecto: '+resultado.error.message); return; }
+  var resultado=await sb.from('loteo_gastos_proyecto').insert({
+    nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId, monto:0,
+    tiene_subcentros:true,
+    subcentros:[{nombre:'Sub-costo 1', expandido:true, items:[{nombre:'Ítem 1', und:'UN', cantidad:1, unitario:0}]}]
+  });
+  if(resultado.error){ alert('No se pudo guardar el gasto de proyecto: '+resultado.error.message); return; }
   cerrarModalGastoProyecto();
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto();
@@ -4222,6 +4307,9 @@ document.getElementById('casa-modal-overlay').addEventListener('click',function(
 document.getElementById('gp-modal-overlay').addEventListener('click',function(e){
   if(e.target===this)cerrarModalGastoProyecto();
 });
+document.getElementById('gp-prorrateo-modal-overlay').addEventListener('click',function(e){
+  if(e.target===this)cerrarModalProrratearGastos();
+});
 
 /* ====================================================
    MÓDULO ORDEN DE COMPRA
@@ -5593,27 +5681,52 @@ function renderAnteproyecto(){
    Flujo de Proyecto. No se calcula de los lotes cargados porque el
    proyecto aún está en etapa de anteproyecto y esos m² pueden cambiar.
    ═══════════════════════════════════════════════════════════════ */
+let apM2EditMode = false;
 function renderApM2Panel(){
   var tb=document.getElementById('ap-m2-body');
+  var btnWrap=document.getElementById('ap-m2-btn-wrap');
   if(!tb) return;
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   var totalM2=etapasOrdenadas.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
   if(etapasOrdenadas.length===0){
     tb.innerHTML='<tr><td colspan="2" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin etapas creadas todavía</td></tr>';
+    if(btnWrap) btnWrap.innerHTML='';
     return;
   }
-  tb.innerHTML = etapasOrdenadas.map(function(e){
-    return `<tr>
-      <td style="text-align:left">${e.nombre}</td>
-      <td><input class="ci" type="number" min="0" step="1" value="${e.m2UtilesProyectados||0}" style="width:100px" onchange="editarM2Etapa(${e.id},+this.value||0)"/></td>
-    </tr>`;
-  }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
+  if(apM2EditMode){
+    tb.innerHTML = etapasOrdenadas.map(function(e){
+      return `<tr>
+        <td style="text-align:left">${e.nombre}</td>
+        <td><input class="ci ap-m2-input" type="number" min="0" step="1" data-etapa-id="${e.id}" value="${e.m2UtilesProyectados||0}" style="width:100px"/></td>
+      </tr>`;
+    }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
+    if(btnWrap) btnWrap.innerHTML = `
+      <button class="btn-primary" style="height:30px;padding:0 12px;font-size:12px" onclick="guardarM2Etapas()"><i class="ti ti-device-floppy" style="font-size:13px"></i> Guardar cambios</button>
+      <button class="btn-cancel" style="height:30px;padding:0 12px;font-size:12px" onclick="cancelarEdicionM2()">Cancelar</button>`;
+  } else {
+    tb.innerHTML = etapasOrdenadas.map(function(e){
+      return `<tr><td style="text-align:left">${e.nombre}</td><td>${f1(e.m2UtilesProyectados||0)} m²</td></tr>`;
+    }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
+    if(btnWrap) btnWrap.innerHTML = `<button class="add-btn" style="height:30px;padding:0 12px;font-size:12px" onclick="activarEdicionM2()"><i class="ti ti-pencil" style="font-size:12px"></i> Editar metros</button>`;
+  }
 }
-async function editarM2Etapa(etapaId, valor){
-  var e=etapas.find(function(x){return x.id===etapaId;});
-  if(!e) return;
-  e.m2UtilesProyectados=valor;
-  await sb.from('loteo_etapas').update({m2_utiles_proyectados:valor}).eq('id',etapaId);
+function activarEdicionM2(){ apM2EditMode=true; renderApM2Panel(); }
+function cancelarEdicionM2(){ apM2EditMode=false; renderApM2Panel(); }
+async function guardarM2Etapas(){
+  var inputs=document.querySelectorAll('.ap-m2-input');
+  var updates=[];
+  inputs.forEach(function(inp){
+    var etapaId=parseInt(inp.dataset.etapaId,10);
+    var valor=+inp.value||0;
+    var e=etapas.find(function(x){return x.id===etapaId;});
+    if(e) e.m2UtilesProyectados=valor;
+    updates.push({id:etapaId, valor:valor});
+  });
+  for(const u of updates){
+    var r=await sb.from('loteo_etapas').update({m2_utiles_proyectados:u.valor}).eq('id', u.id);
+    if(r.error){ alert('No se pudo guardar el m² de una etapa: '+r.error.message); return; }
+  }
+  apM2EditMode=false;
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto();
   renderApM2Panel();
