@@ -1187,10 +1187,6 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
           <input type="text" class="form-control" id="gp-nombre" placeholder="Ej: Arquitectura, Ingeniería…"/>
         </div>
         <div class="form-group full">
-          <label class="form-label">Monto (UF)</label>
-          <input type="number" class="form-control" id="gp-monto" min="0" step="0.01"/>
-        </div>
-        <div class="form-group full">
           <label class="form-label">Forma de prorrateo entre etapas</label>
           <select class="form-control" id="gp-tipo" onchange="onTipoProrrateoChange()">
             <option value="m2">Por m² útil de cada etapa</option>
@@ -1203,6 +1199,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
           <select class="form-control" id="gp-etapa"></select>
         </div>
       </div>
+      <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:4px">El monto se arma desde el desglose de sub-costos e ítems, igual que un centro de costo — se agrega después de guardar, desde la fila del gasto en Flujo de Proyecto.</div>
     </div>
     <div class="cot-modal-footer">
       <button class="btn-cancel" onclick="cerrarModalGastoProyecto()">Cancelar</button>
@@ -1619,7 +1616,7 @@ async function mostrarConsolidado(){
 function renderConsolidado(){
   var wrap=document.getElementById('consolidado-wrap');
   var totIng=consolidadoIngresos.reduce(function(a,e){return a+e.total;},0);
-  var totGastosProyecto=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
+  var totGastosProyecto=gastosProyecto.reduce(function(a,g){return a+calcGastoProyecto(g);},0);
   var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0)+totGastosProyecto;
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
   var totMar=totIng-totCos;
@@ -1763,7 +1760,7 @@ function renderConsolidadoCostos(){
     <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
 
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
-  var totalGP=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
+  var totalGP=gastosProyecto.reduce(function(a,g){return a+calcGastoProyecto(g);},0);
   html+=`<tr class="partida-row">
     <td><button class="toggle-btn" onclick="toggleGastosProyectoGroup()">${gastosProyectoGroupExpandido?'−':'+'}</button>
       <span class="tipo-badge tgen">Gastos de proyecto</span></td>
@@ -1772,20 +1769,86 @@ function renderConsolidadoCostos(){
     if(gastosProyecto.length===0){
       html+='<tr class="subcentro-row"><td colspan="4" style="padding-left:22px;color:var(--color-text-tertiary)">Sin gastos de proyecto agregados</td></tr>';
     }
+    var undOptsHTML=function(actual){
+      return ['ML','M2','M3','GL','UN','N°','KG','HH'].map(function(u){return `<option${u===(actual||'UN')?' selected':''}>${u}</option>`;}).join('');
+    };
     gastosProyecto.forEach(function(g,gi){
+      var montoG=calcGastoProyecto(g);
       html+=`<tr class="subcentro-row">
         <td style="padding-left:22px">
           <button class="sub-toggle" onclick="toggleConsGastoProyecto(${gi})">${g.expandido?'−':'+'}</button>
-          <span class="tipo-badge tgen" style="font-size:10px">${g.nombre}</span>
+          <input class="ci ni" value="${g.nombre}" style="width:110px;font-size:12px;background:var(--color-background-info);border-color:transparent;font-weight:500"
+            data-minw="110" oninput="autoGrowNI(this)" onchange="editarNombreGastoProyecto(${gi},this.value)"/>
           <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_tipoProrrateoLabel(g.tipoProrrateo)})</span></td>
-        <td class="neg">${fval(g.monto)}</td>
+        <td class="neg">${fval(montoG)}</td>
         <td></td>
         <td style="text-align:center">
-          <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar"><i class="ti ti-pencil" style="font-size:11px"></i></button>
+          <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar forma de prorrateo"><i class="ti ti-pencil" style="font-size:11px"></i></button>
           <button class="icon-btn" onclick="eliminarGastoProyecto(${g.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:11px"></i></button>
         </td></tr>`;
       if(g.expandido){
+        if(g.tieneSubcentros){
+          g.subcentros.forEach(function(sc,si){
+            var scTot=calcSubcentro(sc);
+            html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:46px">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 0">
+                <button class="sub-toggle" onclick="toggleSubcentroGasto(${gi},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
+                <input class="ci ni" value="${sc.nombre}" style="width:100px;font-size:12px" data-minw="100" oninput="autoGrowNI(this)"
+                  onchange="gastosProyecto[${gi}].subcentros[${si}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                <span class="neg" style="margin-left:auto;font-size:12px">${fval(scTot)}</span>
+                <button class="sub-del-btn" onclick="delSubcentroGasto(${gi},${si})" title="Eliminar sub-costo"><i class="ti ti-trash" style="font-size:11px"></i></button>
+              </div></td></tr>`;
+            if(sc.expandido){
+              sc.items.forEach(function(it,ii){
+                var tot=calcItem(it);
+                html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:66px">
+                  <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
+                    <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
+                    <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
+                      onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                    <select class="ci" style="width:44px;padding:0 2px;font-size:11px" onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].und=this.value;guardarGastoProyectoCampos(${gi})">${undOptsHTML(it.und)}</select>
+                    <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:60px"
+                      onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].cantidad=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
+                    <span style="font-size:11px;color:var(--color-text-tertiary)">×</span>
+                    <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:68px"
+                      onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].unitario=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
+                    <span class="neg" style="margin-left:auto;font-size:12px">${fval(tot)}</span>
+                    <button class="icon-btn" onclick="delSubItemGasto(${gi},${si},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button>
+                  </div></td></tr>`;
+              });
+              html+=`<tr><td colspan="4" style="padding:2px 0 4px 66px">
+                <button class="add-btn cos-add" onclick="addSubItemGasto(${gi},${si})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
+              </td></tr>`;
+            }
+          });
+          html+=`<tr><td colspan="4" style="padding:4px 0 6px 46px">
+            <button class="add-btn cos-add" onclick="addSubcentroGasto(${gi})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
+          </td></tr>`;
+        } else {
+          (g.items||[]).forEach(function(it,ii){
+            var tot=calcItem(it);
+            html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:46px">
+              <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
+                <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
+                <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
+                  onchange="gastosProyecto[${gi}].items[${ii}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                <select class="ci" style="width:44px;padding:0 2px;font-size:11px" onchange="gastosProyecto[${gi}].items[${ii}].und=this.value;guardarGastoProyectoCampos(${gi})">${undOptsHTML(it.und)}</select>
+                <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:60px"
+                  onchange="gastosProyecto[${gi}].items[${ii}].cantidad=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
+                <span style="font-size:11px;color:var(--color-text-tertiary)">×</span>
+                <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:68px"
+                  onchange="gastosProyecto[${gi}].items[${ii}].unitario=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
+                <span class="neg" style="margin-left:auto;font-size:12px">${fval(tot)}</span>
+                <button class="icon-btn" onclick="delItemGasto(${gi},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button>
+              </div></td></tr>`;
+          });
+          html+=`<tr><td colspan="4" style="padding:2px 0 6px 46px">
+            <button class="add-btn cos-add" onclick="addItemGasto(${gi})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
+          </td></tr>`;
+        }
+
         var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+        html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
         etapasOrdenadas.forEach(function(e){
           var monto=asign[e.id]||0;
           if(monto<=0.0001) return;
@@ -1802,6 +1865,7 @@ function renderConsolidadoCostos(){
   </td></tr>`;
 
   tb.innerHTML=html;
+  tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
 }
 let gastosProyectoGroupExpandido = true;
 function toggleGastosProyectoGroup(){
@@ -1823,16 +1887,20 @@ function toggleConsCosSub(ci,pei,si){
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   GASTOS DE PROYECTO — se ingresan una sola vez con un monto total y
-   una forma de prorrateo, y se reparten automáticamente entre las
-   etapas (guardado como una partida "Gastos de Proyecto" dentro de
-   la Partida 2 de cada etapa que recibe una porción).
+   GASTOS DE PROYECTO — se ingresan una sola vez y se prorratean
+   automáticamente entre las etapas (guardado como una partida
+   "Gastos de Proyecto" dentro de la Partida 2 de cada etapa que
+   recibe una porción). Cada gasto se edita con la MISMA interacción
+   que un centro de costo de Partida 2: sub-costos e ítems con su
+   propia cantidad/unidad/valor unitario — el monto total no se
+   ingresa a mano, se calcula sumando el desglose (calcGastoProyecto).
    ═══════════════════════════════════════════════════════════════ */
 let gastosProyecto = [];
 let editandoGastoProyectoId = null;
 
 function _mapGastoProyectoRow(row){
-  return { id:row.id, nombre:row.nombre, monto:Number(row.monto), tipoProrrateo:row.tipo_prorrateo, etapaEspecificaId:row.etapa_especifica_id, expandido:false };
+  return { id:row.id, nombre:row.nombre, tipoProrrateo:row.tipo_prorrateo, etapaEspecificaId:row.etapa_especifica_id,
+    tieneSubcentros:row.tiene_subcentros, subcentros:row.subcentros||[], items:row.items||[], expandido:false };
 }
 async function cargarGastosProyectoDesdeNube(){
   var res=await sb.from('loteo_gastos_proyecto').select('*').order('id');
@@ -1841,22 +1909,30 @@ async function cargarGastosProyectoDesdeNube(){
   gastosProyecto.forEach(function(g){ if(abiertos.indexOf(g.id)>=0) g.expandido=true; });
 }
 
+function calcGastoProyecto(g){
+  if(g.tieneSubcentros && g.subcentros){
+    return g.subcentros.reduce(function(a,sc){return a+sc.items.reduce(function(b,it){return b+calcItem(it);},0);},0);
+  }
+  return (g.items||[]).reduce(function(a,it){return a+calcItem(it);},0);
+}
+
 function _asignacionGastoProyecto(g, etapasList){
+  var monto=calcGastoProyecto(g);
   var asign={};
   if(g.tipoProrrateo==='etapa'){
     etapasList.forEach(function(e){asign[e.id]=0;});
-    if(g.etapaEspecificaId!=null) asign[g.etapaEspecificaId]=g.monto;
+    if(g.etapaEspecificaId!=null) asign[g.etapaEspecificaId]=monto;
   } else if(g.tipoProrrateo==='m2'){
     var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
     if(totalM2>0){
-      etapasList.forEach(function(e){ asign[e.id]=g.monto*((e.m2UtilesProyectados||0)/totalM2); });
+      etapasList.forEach(function(e){ asign[e.id]=monto*((e.m2UtilesProyectados||0)/totalM2); });
     } else {
       var n=etapasList.length||1;
-      etapasList.forEach(function(e){ asign[e.id]=g.monto/n; });
+      etapasList.forEach(function(e){ asign[e.id]=monto/n; });
     }
   } else {
     var n2=etapasList.length||1;
-    etapasList.forEach(function(e){ asign[e.id]=g.monto/n2; });
+    etapasList.forEach(function(e){ asign[e.id]=monto/n2; });
   }
   return asign;
 }
@@ -1923,12 +1999,10 @@ function abrirModalGastoProyecto(id){
   if(id){
     var g=gastosProyecto.find(function(x){return x.id===id;});
     document.getElementById('gp-nombre').value=g.nombre;
-    document.getElementById('gp-monto').value=g.monto;
     document.getElementById('gp-tipo').value=g.tipoProrrateo;
     if(g.etapaEspecificaId) selEtapa.value=g.etapaEspecificaId;
   } else {
     document.getElementById('gp-nombre').value='';
-    document.getElementById('gp-monto').value='';
     document.getElementById('gp-tipo').value='m2';
   }
   onTipoProrrateoChange();
@@ -1943,16 +2017,17 @@ function onTipoProrrateoChange(){
 }
 async function guardarGastoProyecto(){
   var nombre=document.getElementById('gp-nombre').value.trim();
-  var monto=parseFloat(document.getElementById('gp-monto').value)||0;
   var tipo=document.getElementById('gp-tipo').value;
   var etapaEspecificaId=tipo==='etapa'?parseInt(document.getElementById('gp-etapa').value):null;
   if(!nombre){ alert('Ingresa un nombre para el gasto.'); return; }
-  if(monto<=0){ alert('Ingresa un monto mayor a 0.'); return; }
-  var campos={nombre:nombre, monto:monto, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId};
   if(editandoGastoProyectoId){
-    await sb.from('loteo_gastos_proyecto').update(campos).eq('id', editandoGastoProyectoId);
+    await sb.from('loteo_gastos_proyecto').update({nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId}).eq('id', editandoGastoProyectoId);
   } else {
-    await sb.from('loteo_gastos_proyecto').insert(campos);
+    await sb.from('loteo_gastos_proyecto').insert({
+      nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId, monto:0,
+      tiene_subcentros:true,
+      subcentros:[{nombre:'Sub-costo 1', expandido:true, items:[{nombre:'Ítem 1', und:'UN', cantidad:1, unitario:0}]}]
+    });
   }
   cerrarModalGastoProyecto();
   await cargarGastosProyectoDesdeNube();
@@ -1965,6 +2040,63 @@ async function eliminarGastoProyecto(id){
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto();
   await mostrarConsolidado();
+}
+
+// Persiste el desglose (nombre/sub-costos/ítems) de un gasto de
+// proyecto ya editado en memoria, recalcula su prorrateo por etapa
+// y refresca la tabla — mismo patrón que usa buildCos() con centros.
+async function guardarGastoProyectoCampos(gi){
+  var g=gastosProyecto[gi];
+  var monto=calcGastoProyecto(g);
+  await sb.from('loteo_gastos_proyecto').update({
+    nombre:g.nombre, tiene_subcentros:g.tieneSubcentros, subcentros:g.subcentros, items:g.items, monto:monto
+  }).eq('id', g.id);
+  await recalcularGastosDeProyecto();
+  renderConsolidadoCostos();
+}
+function editarNombreGastoProyecto(gi, valor){
+  gastosProyecto[gi].nombre=valor;
+  guardarGastoProyectoCampos(gi);
+}
+function addSubcentroGasto(gi){
+  var nombres=['Nueva subpartida','Otro','Adicional','Complementario','Misceláneos'];
+  var idx=gastosProyecto[gi].subcentros.length;
+  gastosProyecto[gi].subcentros.push({
+    nombre:nombres[idx]||'Subpartida '+(idx+1), expandido:true,
+    items:[{nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0}]
+  });
+  gastosProyecto[gi].expandido=true;
+  guardarGastoProyectoCampos(gi);
+}
+function delSubcentroGasto(gi,si){
+  if(gastosProyecto[gi].subcentros.length<=1) return;
+  gastosProyecto[gi].subcentros.splice(si,1);
+  guardarGastoProyectoCampos(gi);
+}
+function toggleSubcentroGasto(gi,si){
+  gastosProyecto[gi].subcentros[si].expandido=!gastosProyecto[gi].subcentros[si].expandido;
+  renderConsolidadoCostos();
+}
+function addSubItemGasto(gi,si){
+  gastosProyecto[gi].subcentros[si].items.push({nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0});
+  gastosProyecto[gi].subcentros[si].expandido=true;
+  gastosProyecto[gi].expandido=true;
+  guardarGastoProyectoCampos(gi);
+}
+function delSubItemGasto(gi,si,ii){
+  if(gastosProyecto[gi].subcentros[si].items.length<=1) return;
+  gastosProyecto[gi].subcentros[si].items.splice(ii,1);
+  guardarGastoProyectoCampos(gi);
+}
+function addItemGasto(gi){
+  gastosProyecto[gi].items.push({nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0});
+  gastosProyecto[gi].expandido=true;
+  guardarGastoProyectoCampos(gi);
+}
+function delItemGasto(gi,ii){
+  if(gastosProyecto[gi].items.length<=1) return;
+  gastosProyecto[gi].items.splice(ii,1);
+  guardarGastoProyectoCampos(gi);
 }
 
 /* ═══════════════════════════════════════════════════════════════
