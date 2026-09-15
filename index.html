@@ -1189,6 +1189,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
         <div class="form-group full">
           <label class="form-label">Forma de prorrateo entre etapas</label>
           <select class="form-control" id="gp-tipo" onchange="onTipoProrrateoChange()">
+            <option value="proyecto">Asignar a proyecto (sin prorratear)</option>
             <option value="m2">Por m² útil de cada etapa</option>
             <option value="parejo">Parejo entre todas las etapas</option>
             <option value="etapa">Asignar a una etapa específica</option>
@@ -1517,6 +1518,11 @@ async function eliminarEtapa(id){
   if(!confirm('¿Eliminar esta etapa? Se borran también sus lotes y centros de costo.')) return;
   await sb.from('loteo_etapas').delete().eq('id', id);
   etapas = etapas.filter(function(e){return e.id!==id;});
+  // Un gasto de proyecto "asignado a una etapa específica" que apuntaba
+  // a la etapa recién borrada queda sin destino (la FK ya puso su
+  // etapa_especifica_id en null) — pasa a "Asignar a proyecto" hasta
+  // que se elija un nuevo prorrateo.
+  await sb.from('loteo_gastos_proyecto').update({tipo_prorrateo:'proyecto'}).eq('tipo_prorrateo','etapa').is('etapa_especifica_id', null);
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto(); // una etapa menos cambia el prorrateo parejo/m2
   if(etapaActivaId===id){
@@ -1846,16 +1852,20 @@ function renderConsolidadoCostos(){
           </td></tr>`;
         }
 
-        var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
-        html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
-        etapasOrdenadas.forEach(function(e){
-          var monto=asign[e.id]||0;
-          if(monto<=0.0001) return;
-          var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
-          html+=`<tr class="subitem-row">
-            <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${e.nombre} <span class="muted">(${f1(pct)}% de incidencia)</span></td>
-            <td class="neg">${fval(monto)}</td><td></td><td></td></tr>`;
-        });
+        if(g.tipoProrrateo==='proyecto'){
+          html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:11px;color:var(--color-text-tertiary)">No se prorratea a ninguna etapa — queda registrado solo acá, en Flujo de Proyecto.</td></tr>`;
+        } else {
+          var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+          html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
+          etapasOrdenadas.forEach(function(e){
+            var monto=asign[e.id]||0;
+            if(monto<=0.0001) return;
+            var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+            html+=`<tr class="subitem-row">
+              <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${e.nombre} <span class="muted">(${f1(pct)}% de incidencia)</span></td>
+              <td class="neg">${fval(monto)}</td><td></td><td></td></tr>`;
+          });
+        }
       }
     });
   }
@@ -1917,8 +1927,10 @@ function calcGastoProyecto(g){
 function _asignacionGastoProyecto(g, etapasList){
   var monto=calcGastoProyecto(g);
   var asign={};
-  if(g.tipoProrrateo==='etapa'){
-    etapasList.forEach(function(e){asign[e.id]=0;});
+  etapasList.forEach(function(e){asign[e.id]=0;});
+  if(g.tipoProrrateo==='proyecto'){
+    // Sin prorratear: queda solo registrado en Flujo de Proyecto.
+  } else if(g.tipoProrrateo==='etapa'){
     if(g.etapaEspecificaId!=null) asign[g.etapaEspecificaId]=monto;
   } else if(g.tipoProrrateo==='m2'){
     var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
@@ -1928,13 +1940,14 @@ function _asignacionGastoProyecto(g, etapasList){
       var n=etapasList.length||1;
       etapasList.forEach(function(e){ asign[e.id]=monto/n; });
     }
-  } else {
+  } else if(g.tipoProrrateo==='parejo'){
     var n2=etapasList.length||1;
     etapasList.forEach(function(e){ asign[e.id]=monto/n2; });
   }
   return asign;
 }
 function _pctAsignacionGastoProyecto(g, etapasList, etapaId){
+  if(g.tipoProrrateo==='proyecto') return 0;
   if(g.tipoProrrateo==='etapa') return g.etapaEspecificaId===etapaId?100:0;
   if(g.tipoProrrateo==='m2'){
     var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
@@ -1944,12 +1957,14 @@ function _pctAsignacionGastoProyecto(g, etapasList, etapaId){
     }
     return 100/(etapasList.length||1);
   }
-  return 100/(etapasList.length||1);
+  if(g.tipoProrrateo==='parejo') return 100/(etapasList.length||1);
+  return 0;
 }
 function _tipoProrrateoLabel(tipo){
   if(tipo==='m2') return 'por m² útil';
   if(tipo==='etapa') return 'etapa específica';
-  return 'parejo entre etapas';
+  if(tipo==='parejo') return 'parejo entre etapas';
+  return 'asignado a proyecto (sin prorratear)';
 }
 
 // Reconstruye la partida "Gastos de Proyecto" dentro de cada etapa a
@@ -2027,7 +2042,7 @@ function abrirModalGastoProyecto(id){
     if(g.etapaEspecificaId) selEtapa.value=g.etapaEspecificaId;
   } else {
     document.getElementById('gp-nombre').value='';
-    document.getElementById('gp-tipo').value='m2';
+    document.getElementById('gp-tipo').value='proyecto';
   }
   onTipoProrrateoChange();
   document.getElementById('gp-modal-overlay').classList.remove('hidden');
