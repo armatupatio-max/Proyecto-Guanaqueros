@@ -870,6 +870,21 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   <div class="ap-board" id="ap-board" style="display:none"></div>
   <input type="file" id="ap-col-file-input" multiple style="display:none" onchange="onApColFileChange(event)"/>
 
+  <!-- Solo en el tablero "General": superficie útil proyectada por etapa -->
+  <div id="ap-m2-panel" style="display:none;margin-top:20px">
+    <div class="section-hdr" style="background:#FEF3E2;border:0.5px solid #F5C97A">
+      <i class="ti ti-ruler-2" style="font-size:15px;color:#C47A0E"></i>
+      <span class="shdr-title" style="color:#7A4E05">Superficie útil proyectada por etapa</span>
+      <span class="shdr-badge" style="background:#C47A0E;color:#fff">m²</span>
+    </div>
+    <table class="ft" style="border:0.5px solid #F5C97A">
+      <colgroup><col style="width:70%"><col style="width:30%"></colgroup>
+      <thead><tr><th style="text-align:left">Etapa</th><th>m² útiles proyectados</th></tr></thead>
+      <tbody id="ap-m2-body"></tbody>
+    </table>
+    <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:6px">Editable a mano — el proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil" en Flujo de Proyecto.</div>
+  </div>
+
   <!-- Dentro de una carpeta: explorador simple -->
   <div class="ap-grid" id="ap-grid" style="display:none"></div>
 
@@ -1642,33 +1657,7 @@ function renderConsolidado(){
         <th style="text-align:left">Centro de costo</th><th>Total UF</th><th>Costo real</th><th>Variación</th>
       </tr></thead>
       <tbody id="cons-cos-body"></tbody>
-    </table>
-
-    <div class="section-hdr" style="background:#FEF3E2;border:0.5px solid #F5C97A;margin-top:1.5rem">
-      <i class="ti ti-ruler-2" style="font-size:15px;color:#C47A0E"></i>
-      <span class="shdr-title" style="color:#7A4E05">Superficie útil proyectada por etapa</span>
-      <span class="shdr-badge" style="background:#C47A0E;color:#fff">m²</span>
-    </div>
-    <table class="ft" style="border:0.5px solid #F5C97A;margin-bottom:0.5rem">
-      <colgroup><col style="width:70%"><col style="width:30%"></colgroup>
-      <thead><tr><th style="text-align:left">Etapa</th><th>m² útiles proyectados</th></tr></thead>
-      <tbody id="cons-m2-body"></tbody>
-    </table>
-    <div style="font-size:11px;color:var(--color-text-tertiary);margin-bottom:1.5rem">Editable a mano — el proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil".</div>
-
-    <div class="section-hdr" style="background:#F1EFE8;border:0.5px solid #D3D1C7;margin-top:1rem">
-      <i class="ti ti-building-skyscraper" style="font-size:15px;color:#5F5E5A"></i>
-      <span class="shdr-title" style="color:#2C2C2A">Gastos de Proyecto</span>
-      <span class="shdr-badge" style="background:#5F5E5A;color:#fff">${fval(totGastosProyecto)}</span>
-    </div>
-    <table class="ft" style="border:0.5px solid #D3D1C7">
-      <colgroup><col style="width:60%"><col style="width:25%"><col style="width:15%"></colgroup>
-      <thead><tr><th style="text-align:left">Nombre / forma de prorrateo</th><th>Monto</th><th></th></tr></thead>
-      <tbody id="cons-gp-body"></tbody>
-    </table>
-    <div style="margin:10px 0 1.5rem">
-      <button class="btn-primary" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:13px"></i> Agregar gasto de proyecto</button>
-    </div>`;
+    </table>`;
 
   renderConsolidadoIngresos();
   renderConsolidadoCostos();
@@ -1716,10 +1705,10 @@ function renderConsolidadoCostos(){
   if(!tb) return;
   var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0);
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
+  var html='';
   if(consolidadoCostos.length===0){
-    tb.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>';
+    html+='<tr><td colspan="4" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>';
   } else {
-    var html='';
     consolidadoCostos.forEach(function(c,ci){
       html+=`<tr class="partida-row">
         <td><button class="toggle-btn" onclick="toggleConsCosCentro(${ci})">${c.expandido?'−':'+'}</button>
@@ -1768,13 +1757,56 @@ function renderConsolidadoCostos(){
         });
       }
     });
-    html+=`<tr class="total-row"><td>Total costos por etapa</td><td class="neg">${fval(totCos)}</td>
-      <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
-      <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
-    tb.innerHTML=html;
   }
-  renderConsolidadoM2();
-  renderConsolidadoGastosProyecto();
+  html+=`<tr class="total-row"><td>Total costos por etapa</td><td class="neg">${fval(totCos)}</td>
+    <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
+    <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
+
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var totalGP=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
+  html+=`<tr class="partida-row">
+    <td><button class="toggle-btn" onclick="toggleGastosProyectoGroup()">${gastosProyectoGroupExpandido?'−':'+'}</button>
+      <span class="tipo-badge tgen">Gastos de proyecto</span></td>
+    <td class="neg">${fval(totalGP)}</td><td></td><td></td></tr>`;
+  if(gastosProyectoGroupExpandido){
+    if(gastosProyecto.length===0){
+      html+='<tr class="subcentro-row"><td colspan="4" style="padding-left:22px;color:var(--color-text-tertiary)">Sin gastos de proyecto agregados</td></tr>';
+    }
+    gastosProyecto.forEach(function(g,gi){
+      html+=`<tr class="subcentro-row">
+        <td style="padding-left:22px">
+          <button class="sub-toggle" onclick="toggleConsGastoProyecto(${gi})">${g.expandido?'−':'+'}</button>
+          <span class="tipo-badge tgen" style="font-size:10px">${g.nombre}</span>
+          <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_tipoProrrateoLabel(g.tipoProrrateo)})</span></td>
+        <td class="neg">${fval(g.monto)}</td>
+        <td></td>
+        <td style="text-align:center">
+          <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar"><i class="ti ti-pencil" style="font-size:11px"></i></button>
+          <button class="icon-btn" onclick="eliminarGastoProyecto(${g.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:11px"></i></button>
+        </td></tr>`;
+      if(g.expandido){
+        var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+        etapasOrdenadas.forEach(function(e){
+          var monto=asign[e.id]||0;
+          if(monto<=0.0001) return;
+          var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+          html+=`<tr class="subitem-row">
+            <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${e.nombre} <span class="muted">(${f1(pct)}% de incidencia)</span></td>
+            <td class="neg">${fval(monto)}</td><td></td><td></td></tr>`;
+        });
+      }
+    });
+  }
+  html+=`<tr><td colspan="4" style="padding:10px 4px 4px 22px">
+    <button class="btn-primary" style="height:28px;padding:0 10px;font-size:11px" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto de proyecto</button>
+  </td></tr>`;
+
+  tb.innerHTML=html;
+}
+let gastosProyectoGroupExpandido = true;
+function toggleGastosProyectoGroup(){
+  gastosProyectoGroupExpandido=!gastosProyectoGroupExpandido;
+  renderConsolidadoCostos();
 }
 function toggleConsCosCentro(ci){
   consolidadoCostos[ci].expandido=!consolidadoCostos[ci].expandido;
@@ -1788,33 +1820,6 @@ function toggleConsCosSub(ci,pei,si){
   var sc=consolidadoCostos[ci].porEtapa[pei].centro.subcentros[si];
   sc.expandido=!sc.expandido;
   renderConsolidadoCostos();
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   SUPERFICIE ÚTIL PROYECTADA POR ETAPA (m²) — valor editable a mano,
-   usado para prorratear los gastos de proyecto "por m² útil". No se
-   calcula de los lotes cargados porque el proyecto aún está en etapa
-   de anteproyecto y esos m² pueden cambiar.
-   ═══════════════════════════════════════════════════════════════ */
-function renderConsolidadoM2(){
-  var tb=document.getElementById('cons-m2-body');
-  if(!tb) return;
-  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
-  var totalM2=etapasOrdenadas.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
-  tb.innerHTML = etapasOrdenadas.map(function(e){
-    return `<tr>
-      <td style="text-align:left">${e.nombre}</td>
-      <td><input class="ci" type="number" min="0" step="1" value="${e.m2UtilesProyectados||0}" style="width:100px" onchange="editarM2Etapa(${e.id},+this.value||0)"/></td>
-    </tr>`;
-  }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
-}
-async function editarM2Etapa(etapaId, valor){
-  var e=etapas.find(function(x){return x.id===etapaId;});
-  if(!e) return;
-  e.m2UtilesProyectados=valor;
-  await sb.from('loteo_etapas').update({m2_utiles_proyectados:valor}).eq('id',etapaId);
-  await recalcularGastosDeProyecto();
-  await mostrarConsolidado();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1904,44 +1909,9 @@ async function recalcularGastosDeProyecto(){
   }
 }
 
-function renderConsolidadoGastosProyecto(){
-  var tb=document.getElementById('cons-gp-body');
-  if(!tb) return;
-  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
-  var totalGP=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
-  if(gastosProyecto.length===0){
-    tb.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin gastos de proyecto agregados</td></tr>';
-    return;
-  }
-  var html='';
-  gastosProyecto.forEach(function(g,gi){
-    html+=`<tr class="partida-row">
-      <td><button class="toggle-btn" onclick="toggleConsGastoProyecto(${gi})">${g.expandido?'−':'+'}</button>
-        <span class="tipo-badge tgen">${g.nombre}</span>
-        <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_tipoProrrateoLabel(g.tipoProrrateo)})</span></td>
-      <td class="neg">${fval(g.monto)}</td>
-      <td style="text-align:right">
-        <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar"><i class="ti ti-pencil" style="font-size:12px"></i></button>
-        <button class="icon-btn" onclick="eliminarGastoProyecto(${g.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:12px"></i></button>
-      </td></tr>`;
-    if(g.expandido){
-      var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
-      etapasOrdenadas.forEach(function(e){
-        var monto=asign[e.id]||0;
-        if(monto<=0.0001) return;
-        var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
-        html+=`<tr class="subcentro-row">
-          <td style="padding-left:22px"><span class="tipo-badge tgen" style="font-size:10px">${e.nombre}</span> <span class="muted">(${f1(pct)}% de incidencia)</span></td>
-          <td class="neg">${fval(monto)}</td><td></td></tr>`;
-      });
-    }
-  });
-  html+=`<tr class="total-row"><td>Total gastos de proyecto</td><td class="neg">${fval(totalGP)}</td><td></td></tr>`;
-  tb.innerHTML=html;
-}
 function toggleConsGastoProyecto(gi){
   gastosProyecto[gi].expandido=!gastosProyecto[gi].expandido;
-  renderConsolidadoGastosProyecto();
+  renderConsolidadoCostos();
 }
 
 function abrirModalGastoProyecto(id){
@@ -2295,28 +2265,37 @@ let history=[JSON.parse(JSON.stringify({lotes,centros,registros}))];
 let histIdx=0;
 
 /* ---- UF AUTOMÁTICA DESDE SII ---- */
+// Fuentes públicas en JSON con la misma forma de respuesta
+// ({serie:[{fecha,valor}]}). Se intenta cada una en orden — si la
+// primera está caída (mindicador.cl ha tenido cortes largos) se sigue
+// con la siguiente en vez de quedar pegado en "manual".
+const UF_FUENTES = [
+  'https://findic.cl/api/uf',
+  'https://mindicador.cl/api/uf',
+];
 async function fetchUFdesdesSII(){
-  // Fuente: mindicador.cl — API pública y estable (basada en los datos
-  // oficiales que publica el Banco Central/SII), en JSON. Reemplaza el
-  // scraping anterior del HTML del SII vía proxy, que era frágil y
-  // fallaba seguido (quedaba en "manual").
   const statusEl=document.getElementById('uf-status');
-  try{
-    const resp=await fetch('https://mindicador.cl/api/uf', {signal:AbortSignal.timeout(8000)});
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
-    const json=await resp.json();
-    const dato=(json.serie||[])[0];
-    if(!dato || !dato.valor) throw new Error('sin datos');
-    const ufVal=Math.round(dato.valor*100)/100;
-    if(!(ufVal>1000)) throw new Error('valor no válido');
-    document.getElementById('uf-val').value=ufVal;
-    recalc();
-    const f=new Date(dato.fecha);
-    const fStr=String(f.getDate()).padStart(2,'0')+'/'+String(f.getMonth()+1).padStart(2,'0')+'/'+f.getFullYear();
-    if(statusEl) statusEl.innerHTML=`<i class="ti ti-check" style="font-size:11px;color:#0F6E56"></i> <span style="color:#0F6E56">SII ${fStr}</span>`;
-  }catch(e){
-    if(statusEl) statusEl.innerHTML=`<i class="ti ti-alert-triangle" style="font-size:11px;color:#C47A0E"></i> <span style="color:#C47A0E" title="${e.message}">manual</span>`;
+  for(const url of UF_FUENTES){
+    try{
+      const resp=await fetch(url, {cache:'no-store', signal:AbortSignal.timeout(6000)});
+      if(!resp.ok) throw new Error('HTTP '+resp.status);
+      const json=await resp.json();
+      const dato=(json.serie||[])[0];
+      if(!dato || !dato.valor) throw new Error('sin datos');
+      const ufVal=Math.round(dato.valor*100)/100;
+      if(!(ufVal>1000)) throw new Error('valor no válido');
+      document.getElementById('uf-val').value=ufVal;
+      recalc();
+      const fechaStr=dato.fecha.includes('T')?dato.fecha:dato.fecha+'T00:00:00';
+      const f=new Date(fechaStr);
+      const fStr=String(f.getDate()).padStart(2,'0')+'/'+String(f.getMonth()+1).padStart(2,'0')+'/'+f.getFullYear();
+      if(statusEl) statusEl.innerHTML=`<i class="ti ti-check" style="font-size:11px;color:#0F6E56"></i> <span style="color:#0F6E56">SII ${fStr}</span>`;
+      return;
+    }catch(e){
+      continue; // probar la siguiente fuente
+    }
   }
+  if(statusEl) statusEl.innerHTML=`<i class="ti ti-alert-triangle" style="font-size:11px;color:#C47A0E"></i> <span style="color:#C47A0E" title="No se pudo contactar ninguna fuente de UF">manual</span>`;
 }
 fetchUFdesdesSII();
 function showTab(id, btn){
@@ -5377,6 +5356,44 @@ function renderAnteproyecto(){
   } else {
     renderApGridInto('ap-grid', apCarpetas, apArchivos);
   }
+
+  var tableroActual=apTableros.find(function(t){return t.id===apTableroActualId;});
+  var esGeneral = apCarpetaActualId===null && tableroActual && tableroActual.nombre==='General';
+  document.getElementById('ap-m2-panel').style.display = esGeneral ? '' : 'none';
+  if(esGeneral) renderApM2Panel();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SUPERFICIE ÚTIL PROYECTADA POR ETAPA (m²) — vive en Anteproyecto ›
+   General, abajo de las columnas de archivos. Valor editable a mano,
+   usado para prorratear los gastos de proyecto "por m² útil" en
+   Flujo de Proyecto. No se calcula de los lotes cargados porque el
+   proyecto aún está en etapa de anteproyecto y esos m² pueden cambiar.
+   ═══════════════════════════════════════════════════════════════ */
+function renderApM2Panel(){
+  var tb=document.getElementById('ap-m2-body');
+  if(!tb) return;
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var totalM2=etapasOrdenadas.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+  if(etapasOrdenadas.length===0){
+    tb.innerHTML='<tr><td colspan="2" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin etapas creadas todavía</td></tr>';
+    return;
+  }
+  tb.innerHTML = etapasOrdenadas.map(function(e){
+    return `<tr>
+      <td style="text-align:left">${e.nombre}</td>
+      <td><input class="ci" type="number" min="0" step="1" value="${e.m2UtilesProyectados||0}" style="width:100px" onchange="editarM2Etapa(${e.id},+this.value||0)"/></td>
+    </tr>`;
+  }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
+}
+async function editarM2Etapa(etapaId, valor){
+  var e=etapas.find(function(x){return x.id===etapaId;});
+  if(!e) return;
+  e.m2UtilesProyectados=valor;
+  await sb.from('loteo_etapas').update({m2_utiles_proyectados:valor}).eq('id',etapaId);
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto();
+  renderApM2Panel();
 }
 
 function apFolderCardHTML(c){
