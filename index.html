@@ -1989,7 +1989,7 @@ async function recalcularGastosDeProyecto(){
         return { nombre:it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario*frac };
       }).filter(function(it){ return it.cantidad*it.unitario>0.0001; });
       if(itemsEscalados.length===0) return;
-      subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia', expandido:false, items:itemsEscalados });
+      subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia ('+_tipoProrrateoLabel(g.tipoProrrateo)+')', expandido:false, items:itemsEscalados });
     });
 
     var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').limit(1);
@@ -2042,17 +2042,23 @@ function onTipoProrrateoChange(){
 async function guardarGastoProyecto(){
   var nombre=document.getElementById('gp-nombre').value.trim();
   var tipo=document.getElementById('gp-tipo').value;
-  var etapaEspecificaId=tipo==='etapa'?parseInt(document.getElementById('gp-etapa').value):null;
+  var etapaEspecificaId=null;
+  if(tipo==='etapa'){
+    etapaEspecificaId=parseInt(document.getElementById('gp-etapa').value,10);
+    if(!Number.isFinite(etapaEspecificaId)){ alert('Selecciona a qué etapa se asigna este gasto.'); return; }
+  }
   if(!nombre){ alert('Ingresa un nombre para el gasto.'); return; }
+  var resultado;
   if(editandoGastoProyectoId){
-    await sb.from('loteo_gastos_proyecto').update({nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId}).eq('id', editandoGastoProyectoId);
+    resultado=await sb.from('loteo_gastos_proyecto').update({nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId}).eq('id', editandoGastoProyectoId);
   } else {
-    await sb.from('loteo_gastos_proyecto').insert({
+    resultado=await sb.from('loteo_gastos_proyecto').insert({
       nombre:nombre, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId, monto:0,
       tiene_subcentros:true,
       subcentros:[{nombre:'Sub-costo 1', expandido:true, items:[{nombre:'Ítem 1', und:'UN', cantidad:1, unitario:0}]}]
     });
   }
+  if(resultado && resultado.error){ alert('No se pudo guardar el gasto de proyecto: '+resultado.error.message); return; }
   cerrarModalGastoProyecto();
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto();
@@ -2060,7 +2066,8 @@ async function guardarGastoProyecto(){
 }
 async function eliminarGastoProyecto(id){
   if(!confirm('¿Eliminar este gasto de proyecto? Se quitará también de todas las etapas donde estaba prorrateado.')) return;
-  await sb.from('loteo_gastos_proyecto').delete().eq('id', id);
+  var resultado=await sb.from('loteo_gastos_proyecto').delete().eq('id', id);
+  if(resultado.error){ alert('No se pudo eliminar: '+resultado.error.message); return; }
   await cargarGastosProyectoDesdeNube();
   await recalcularGastosDeProyecto();
   await mostrarConsolidado();
@@ -2072,9 +2079,10 @@ async function eliminarGastoProyecto(id){
 async function guardarGastoProyectoCampos(gi){
   var g=gastosProyecto[gi];
   var monto=calcGastoProyecto(g);
-  await sb.from('loteo_gastos_proyecto').update({
+  var resultado=await sb.from('loteo_gastos_proyecto').update({
     nombre:g.nombre, tiene_subcentros:g.tieneSubcentros, subcentros:g.subcentros, items:g.items, monto:monto
   }).eq('id', g.id);
+  if(resultado.error){ alert('No se pudo guardar el cambio: '+resultado.error.message); return; }
   await recalcularGastosDeProyecto();
   renderConsolidadoCostos();
 }
