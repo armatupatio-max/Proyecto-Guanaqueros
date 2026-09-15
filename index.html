@@ -1157,6 +1157,47 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   </div>
 </div>
 
+<!-- MODAL GASTO DE PROYECTO -->
+<div class="casa-modal-overlay hidden" id="gp-modal-overlay">
+  <div class="casa-modal-box">
+    <div class="cot-modal-hdr">
+      <i class="ti ti-building-skyscraper" style="font-size:16px;color:#5F5E5A"></i>
+      <span class="cot-modal-hdr-title" id="gp-modal-title">Agregar gasto de proyecto</span>
+      <button class="modal-close" onclick="cerrarModalGastoProyecto()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="cot-modal-body">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label class="form-label">Nombre del gasto</label>
+          <input type="text" class="form-control" id="gp-nombre" placeholder="Ej: Arquitectura, Ingeniería…"/>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Monto (UF)</label>
+          <input type="number" class="form-control" id="gp-monto" min="0" step="0.01"/>
+        </div>
+        <div class="form-group full">
+          <label class="form-label">Forma de prorrateo entre etapas</label>
+          <select class="form-control" id="gp-tipo" onchange="onTipoProrrateoChange()">
+            <option value="m2">Por m² útil de cada etapa</option>
+            <option value="parejo">Parejo entre todas las etapas</option>
+            <option value="etapa">Asignar a una etapa específica</option>
+          </select>
+        </div>
+        <div class="form-group full" id="gp-etapa-wrap" style="display:none">
+          <label class="form-label">Etapa</label>
+          <select class="form-control" id="gp-etapa"></select>
+        </div>
+      </div>
+    </div>
+    <div class="cot-modal-footer">
+      <button class="btn-cancel" onclick="cerrarModalGastoProyecto()">Cancelar</button>
+      <button class="btn-save" style="background:#5F5E5A" onclick="guardarGastoProyecto()">
+        <i class="ti ti-device-floppy" style="font-size:13px;margin-right:4px"></i> Guardar
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL OVERLAY (gastos) -->
 <div class="modal-overlay hidden" id="modal-overlay">
   <div class="modal-box">
@@ -1366,7 +1407,7 @@ function renderEtapaTabs(){
   const pillBase = 'height:30px;padding:0 14px;border-radius:99px;font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:6px;border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);color:var(--color-text-secondary)';
   const pillActiveEtapa = 'background:#185FA5;border-color:#185FA5;color:#fff';
   const pillActiveCons = 'background:#6B2FA0;border-color:#6B2FA0;color:#fff';
-  let html = `<span style="${pillBase}${vistaConsolidado?';'+pillActiveCons:''}" onclick="mostrarConsolidado()"><i class="ti ti-chart-arrows-vertical" style="font-size:12px"></i> Flujo Consolidado</span>`;
+  let html = `<span style="${pillBase}${vistaConsolidado?';'+pillActiveCons:''}" onclick="mostrarConsolidado()"><i class="ti ti-chart-arrows-vertical" style="font-size:12px"></i> Flujo de Proyecto</span>`;
   html += etapas.map(function(e){
     const activo = !vistaConsolidado && e.id===etapaActivaId;
     return `<span style="${pillBase}${activo?';'+pillActiveEtapa:''}" onclick="seleccionarEtapa(${e.id})">
@@ -1387,7 +1428,7 @@ async function cargarEtapasDesdeNube(){
     var ins = await sb.from('loteo_etapas').insert({nombre:'Etapa 1', orden:0}).select().single();
     rows = ins.data ? [ins.data] : [];
   }
-  etapas = rows.map(function(r){ return {id:r.id, nombre:r.nombre, orden:r.orden}; });
+  etapas = rows.map(function(r){ return {id:r.id, nombre:r.nombre, orden:r.orden, m2UtilesProyectados:Number(r.m2_utiles_proyectados)||0}; });
   if(!etapaActivaId || !etapas.some(function(e){return e.id===etapaActivaId;})){
     etapaActivaId = etapas[0].id;
   }
@@ -1415,12 +1456,12 @@ async function agregarEtapa(){
   if(ins.error){ alert('No se pudo crear la etapa: '+ins.error.message); return; }
   var nuevaEtapaId = ins.data.id;
   var etapaPlantillaId = etapas[0].id; // Etapa 1 = plantilla de Partida 2
-  etapas.push({id:nuevaEtapaId, nombre:ins.data.nombre, orden:ins.data.orden});
+  etapas.push({id:nuevaEtapaId, nombre:ins.data.nombre, orden:ins.data.orden, m2UtilesProyectados:0});
 
   // Clonar la estructura de Partida 2 (centros/subcentros/ítems) de la
   // etapa plantilla, pero vacía: mismos nombres, cantidades y
   // unitarios en cero. La plantilla (Etapa 1) queda intacta.
-  var plantillaRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaPlantillaId).order('orden');
+  var plantillaRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaPlantillaId).neq('nombre','Gastos de Proyecto').order('orden');
   var centrosClonados = (plantillaRes.data||[]).map(function(row){
     var c = _mapCentroRow(row);
     c.expandido = false;
@@ -1440,6 +1481,8 @@ async function agregarEtapa(){
   lotes = [];
   centros = centrosClonados;
   await _guardarLotesCentrosAhora(); // persiste el clon en la nueva etapa
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto(); // una etapa más cambia el prorrateo parejo/m2
   vistaConsolidado = false;
   document.getElementById('etapa-detalle-wrap').style.display = '';
   document.getElementById('consolidado-wrap').style.display = 'none';
@@ -1462,6 +1505,8 @@ async function eliminarEtapa(id){
   if(!confirm('¿Eliminar esta etapa? Se borran también sus lotes y centros de costo.')) return;
   await sb.from('loteo_etapas').delete().eq('id', id);
   etapas = etapas.filter(function(e){return e.id!==id;});
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto(); // una etapa menos cambia el prorrateo parejo/m2
   if(etapaActivaId===id){
     await seleccionarEtapa(etapas[0].id);
   } else {
@@ -1517,6 +1562,8 @@ async function mostrarConsolidado(){
   var etapasOrdenadas = [...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   var centrosPorNombre = {}; // nombre -> {nombre, cls, total, porEtapa:[]}
 
+  await cargarGastosProyectoDesdeNube();
+
   consolidadoIngresos = [];
   for(const e of etapasOrdenadas){
     var lotesRes = await sb.from('loteo_lotes').select('*').eq('etapa_id', e.id).order('orden');
@@ -1526,36 +1573,22 @@ async function mostrarConsolidado(){
 
     var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', e.id).order('orden');
     (centrosRes.data||[]).map(_mapCentroRow).forEach(function(c){
+      if(c.nombre==='Gastos de Proyecto') return; // se muestra aparte, sourced desde loteo_gastos_proyecto
       var tot=calcCentro(c);
-      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[], general:null};
+      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[]};
       centrosPorNombre[c.nombre].total += tot;
       centrosPorNombre[c.nombre].porEtapa.push({etapaId:e.id, etapaNombre:e.nombre, total:tot, centro:c, expandido:false});
     });
   }
 
-  // Gastos generales del proyecto (no atados a ninguna etapa) — se
-  // fusionan por nombre igual que los de etapa, y se agregan como una
-  // línea "Gasto General" debajo del desglose por etapa de ese centro.
-  var generalRes = await sb.from('loteo_centros').select('*').is('etapa_id', null).order('orden');
-  (generalRes.data||[]).forEach(function(row){
-    var c=_mapCentroRow(row);
-    var tot=calcCentro(c);
-    if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[], general:null};
-    centrosPorNombre[c.nombre].total += tot;
-    centrosPorNombre[c.nombre].general = { id:row.id, items:c.items||[], tieneSubcentros:c.tieneSubcentros, subcentros:c.subcentros||[], total:tot, expandido:false };
-  });
-
   var regRes = await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id');
   var realPorNombre = {};
   var realPorEtapaCentro = {};
-  var realGeneralPorNombre = {};
   (regRes.data||[]).forEach(function(r){
     realPorNombre[r.centro] = (realPorNombre[r.centro]||0) + Number(r.monto);
     if(r.etapa_id){
       var key=r.etapa_id+'|'+r.centro;
       realPorEtapaCentro[key] = (realPorEtapaCentro[key]||0) + Number(r.monto);
-    } else {
-      realGeneralPorNombre[r.centro] = (realGeneralPorNombre[r.centro]||0) + Number(r.monto);
     }
   });
 
@@ -1563,7 +1596,6 @@ async function mostrarConsolidado(){
   consolidadoCostos.forEach(function(c){
     c.real = realPorNombre[c.nombre]||0;
     c.porEtapa.forEach(function(pe){ pe.real = realPorEtapaCentro[pe.etapaId+'|'+c.nombre]||0; });
-    if(c.general) c.general.real = realGeneralPorNombre[c.nombre]||0;
   });
 
   renderConsolidado();
@@ -1572,7 +1604,8 @@ async function mostrarConsolidado(){
 function renderConsolidado(){
   var wrap=document.getElementById('consolidado-wrap');
   var totIng=consolidadoIngresos.reduce(function(a,e){return a+e.total;},0);
-  var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0);
+  var totGastosProyecto=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
+  var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0)+totGastosProyecto;
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
   var totMar=totIng-totCos;
 
@@ -1600,7 +1633,7 @@ function renderConsolidado(){
 
     <div class="section-hdr cos">
       <i class="ti ti-receipt" style="font-size:15px;color:#A32D2D"></i>
-      <span class="shdr-title cos">Partida 2 — Costos · Todas las etapas (fusionado por centro)</span>
+      <span class="shdr-title cos">Partida 2 — Costos · Partidas creadas en las etapas</span>
       <span class="shdr-badge cos">Costos</span>
     </div>
     <table class="ft cos">
@@ -1609,7 +1642,33 @@ function renderConsolidado(){
         <th style="text-align:left">Centro de costo</th><th>Total UF</th><th>Costo real</th><th>Variación</th>
       </tr></thead>
       <tbody id="cons-cos-body"></tbody>
-    </table>`;
+    </table>
+
+    <div class="section-hdr" style="background:#FEF3E2;border:0.5px solid #F5C97A;margin-top:1.5rem">
+      <i class="ti ti-ruler-2" style="font-size:15px;color:#C47A0E"></i>
+      <span class="shdr-title" style="color:#7A4E05">Superficie útil proyectada por etapa</span>
+      <span class="shdr-badge" style="background:#C47A0E;color:#fff">m²</span>
+    </div>
+    <table class="ft" style="border:0.5px solid #F5C97A;margin-bottom:0.5rem">
+      <colgroup><col style="width:70%"><col style="width:30%"></colgroup>
+      <thead><tr><th style="text-align:left">Etapa</th><th>m² útiles proyectados</th></tr></thead>
+      <tbody id="cons-m2-body"></tbody>
+    </table>
+    <div style="font-size:11px;color:var(--color-text-tertiary);margin-bottom:1.5rem">Editable a mano — el proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil".</div>
+
+    <div class="section-hdr" style="background:#F1EFE8;border:0.5px solid #D3D1C7;margin-top:1rem">
+      <i class="ti ti-building-skyscraper" style="font-size:15px;color:#5F5E5A"></i>
+      <span class="shdr-title" style="color:#2C2C2A">Gastos de Proyecto</span>
+      <span class="shdr-badge" style="background:#5F5E5A;color:#fff">${fval(totGastosProyecto)}</span>
+    </div>
+    <table class="ft" style="border:0.5px solid #D3D1C7">
+      <colgroup><col style="width:60%"><col style="width:25%"><col style="width:15%"></colgroup>
+      <thead><tr><th style="text-align:left">Nombre / forma de prorrateo</th><th>Monto</th><th></th></tr></thead>
+      <tbody id="cons-gp-body"></tbody>
+    </table>
+    <div style="margin:10px 0 1.5rem">
+      <button class="btn-primary" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:13px"></i> Agregar gasto de proyecto</button>
+    </div>`;
 
   renderConsolidadoIngresos();
   renderConsolidadoCostos();
@@ -1659,125 +1718,63 @@ function renderConsolidadoCostos(){
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
   if(consolidadoCostos.length===0){
     tb.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>';
-    return;
-  }
-  var html='';
-  consolidadoCostos.forEach(function(c,ci){
-    html+=`<tr class="partida-row">
-      <td><button class="toggle-btn" onclick="toggleConsCosCentro(${ci})">${c.expandido?'−':'+'}</button>
-        <span class="tipo-badge ${c.cls||'tgen'}">${c.nombre}</span></td>
-      <td class="neg">${fval(c.total)}</td>
-      <td style="text-align:center">${fReal(c.real)}</td>
-      <td style="text-align:center">${fVar(c.total,c.real)}</td></tr>`;
-    if(c.expandido){
-      c.porEtapa.forEach(function(pe,pei){
-        html+=`<tr class="subcentro-row">
-          <td style="padding-left:22px">
-            <button class="sub-toggle" onclick="toggleConsCosEtapa(${ci},${pei})">${pe.expandido?'−':'+'}</button>
-            <span class="tipo-badge tgen" style="font-size:10px">${pe.etapaNombre}</span></td>
-          <td class="neg">${fval(pe.total)}</td>
-          <td style="text-align:center">${fReal(pe.real)}</td>
-          <td style="text-align:center">${fVar(pe.total,pe.real)}</td></tr>`;
-        if(pe.expandido){
-          var ct=pe.centro;
-          if(ct.tieneSubcentros && ct.subcentros && ct.subcentros.length){
-            ct.subcentros.forEach(function(sc,si){
-              var scTot=calcSubcentro(sc);
-              html+=`<tr class="subitem-row">
-                <td style="padding-left:46px;color:var(--color-text-secondary)">
-                  <button class="sub-toggle" onclick="toggleConsCosSub(${ci},${pei},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
-                  ${sc.nombre}</td>
-                <td class="neg">${fval(scTot)}</td><td></td><td></td></tr>`;
-              if(sc.expandido){
-                (sc.items||[]).forEach(function(it){
-                  var tot=calcItem(it);
-                  html+=`<tr class="subitem-row">
-                    <td style="padding-left:66px;color:var(--color-text-tertiary);font-size:11px">
-                      ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''} × ${f1(it.unitario)} UF)</span></td>
-                    <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
-                });
-              }
-            });
-          } else if(ct.items && ct.items.length){
-            ct.items.forEach(function(it){
-              var tot=calcItem(it);
-              html+=`<tr class="subitem-row">
-                <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${it.nombre}</td>
-                <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
-            });
+  } else {
+    var html='';
+    consolidadoCostos.forEach(function(c,ci){
+      html+=`<tr class="partida-row">
+        <td><button class="toggle-btn" onclick="toggleConsCosCentro(${ci})">${c.expandido?'−':'+'}</button>
+          <span class="tipo-badge ${c.cls||'tgen'}">${c.nombre}</span></td>
+        <td class="neg">${fval(c.total)}</td>
+        <td style="text-align:center">${fReal(c.real)}</td>
+        <td style="text-align:center">${fVar(c.total,c.real)}</td></tr>`;
+      if(c.expandido){
+        c.porEtapa.forEach(function(pe,pei){
+          html+=`<tr class="subcentro-row">
+            <td style="padding-left:22px">
+              <button class="sub-toggle" onclick="toggleConsCosEtapa(${ci},${pei})">${pe.expandido?'−':'+'}</button>
+              <span class="tipo-badge tgen" style="font-size:10px">${pe.etapaNombre}</span></td>
+            <td class="neg">${fval(pe.total)}</td>
+            <td style="text-align:center">${fReal(pe.real)}</td>
+            <td style="text-align:center">${fVar(pe.total,pe.real)}</td></tr>`;
+          if(pe.expandido){
+            var ct=pe.centro;
+            if(ct.tieneSubcentros && ct.subcentros && ct.subcentros.length){
+              ct.subcentros.forEach(function(sc,si){
+                var scTot=calcSubcentro(sc);
+                html+=`<tr class="subitem-row">
+                  <td style="padding-left:46px;color:var(--color-text-secondary)">
+                    <button class="sub-toggle" onclick="toggleConsCosSub(${ci},${pei},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
+                    ${sc.nombre}</td>
+                  <td class="neg">${fval(scTot)}</td><td></td><td></td></tr>`;
+                if(sc.expandido){
+                  (sc.items||[]).forEach(function(it){
+                    var tot=calcItem(it);
+                    html+=`<tr class="subitem-row">
+                      <td style="padding-left:66px;color:var(--color-text-tertiary);font-size:11px">
+                        ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''} × ${f1(it.unitario)} UF)</span></td>
+                      <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
+                  });
+                }
+              });
+            } else if(ct.items && ct.items.length){
+              ct.items.forEach(function(it){
+                var tot=calcItem(it);
+                html+=`<tr class="subitem-row">
+                  <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${it.nombre}</td>
+                  <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
+              });
+            }
           }
-        }
-      });
-      if(c.general){
-        var g=c.general;
-        html+=`<tr class="subcentro-row" style="background:#F1EFE8">
-          <td style="padding-left:22px">
-            <button class="sub-toggle" onclick="toggleConsCosGeneral(${ci})">${g.expandido?'−':'+'}</button>
-            <span class="tipo-badge tgen" style="font-size:10px">Gasto General</span></td>
-          <td class="neg">${fval(g.total)}</td>
-          <td style="text-align:center">${fReal(g.real)}</td>
-          <td style="text-align:center">${fVar(g.total,g.real)}</td></tr>`;
-        if(g.expandido){
-          if(g.tieneSubcentros && g.subcentros && g.subcentros.length){
-            g.subcentros.forEach(function(sc,si){
-              var scTot=calcSubcentro(sc);
-              html+=`<tr class="subitem-row">
-                <td style="padding-left:46px;color:var(--color-text-secondary)">
-                  <button class="sub-toggle" onclick="toggleGeneralSubcentro(${ci},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
-                  <input class="ci ni" value="${(sc.nombre||'').replace(/"/g,'&quot;')}" style="width:100px;font-size:11px" data-minw="100" oninput="autoGrowNI(this)" onchange="editGeneralSubcentroNombre(${ci},${si},this.value)"/>
-                  <button class="icon-btn" onclick="delGeneralSubcentro(${ci},${si})" title="Eliminar subpartida"><i class="ti ti-trash" style="font-size:10px"></i></button>
-                </td>
-                <td class="neg">${fval(scTot)}</td><td></td><td></td></tr>`;
-              if(sc.expandido){
-                (sc.items||[]).forEach(function(it,ii){
-                  var tot=calcItem(it);
-                  html+=`<tr class="subitem-row">
-                    <td style="padding-left:66px">
-                      <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:100px;font-size:11px" data-minw="100" oninput="autoGrowNI(this)" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'nombre',this.value)"/>
-                      <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:48px" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'cantidad',+this.value||0)"/> ×
-                      <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:56px" onchange="editGeneralSubItemCampo(${ci},${si},${ii},'unitario',+this.value||0)"/> UF
-                    </td>
-                    <td class="neg">${fval(tot)}</td><td></td>
-                    <td style="text-align:right"><button class="icon-btn" onclick="delGeneralSubItem(${ci},${si},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button></td>
-                  </tr>`;
-                });
-                html+=`<tr><td colspan="4" style="padding:4px 66px"><button class="add-btn cos-add" onclick="addGeneralSubItem(${ci},${si})"><i class="ti ti-plus" style="font-size:10px"></i> Agregar ítem</button></td></tr>`;
-              }
-            });
-            html+=`<tr><td colspan="4" style="padding:4px 46px">
-              <button class="add-btn cos-add" onclick="addGeneralSubcentro(${ci})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
-              <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
-            </td></tr>`;
-          } else {
-            g.items.forEach(function(it,ii){
-              var tot=calcItem(it);
-              html+=`<tr class="subitem-row">
-                <td style="padding-left:46px">
-                  <input class="ci ni" value="${(it.nombre||'').replace(/"/g,'&quot;')}" style="width:110px" data-minw="110" oninput="autoGrowNI(this)" onchange="editarItemGeneral(${g.id},${ii},'nombre',this.value)"/>
-                  <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:52px" onchange="editarItemGeneral(${g.id},${ii},'cantidad',+this.value||0)"/> ×
-                  <input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:60px" onchange="editarItemGeneral(${g.id},${ii},'unitario',+this.value||0)"/> UF
-                </td>
-                <td class="neg">${fval(tot)}</td><td></td>
-                <td style="text-align:right"><button class="icon-btn" onclick="eliminarItemGeneral(${g.id},${ii})" title="Eliminar ítem"><i class="ti ti-x" style="font-size:12px"></i></button></td>
-              </tr>`;
-            });
-            html+=`<tr><td colspan="4" style="padding:5px 46px">
-              <button class="add-btn cos-add" onclick="agregarItemGeneral(${g.id})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
-              <button class="add-btn cos-add" onclick="addGeneralSubcentro(${ci})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
-              <button class="icon-btn" onclick="eliminarCentroGeneral(${g.id})" title="Eliminar esta categoría de gasto general" style="margin-left:8px"><i class="ti ti-trash" style="font-size:12px;color:#A32D2D"></i></button>
-            </td></tr>`;
-          }
-        }
+        });
       }
-    }
-  });
-  html+=`<tr><td colspan="4" style="padding:7px 10px;border-top:0.5px solid var(--color-border-tertiary)">
-    <button class="add-btn cos-add" onclick="agregarGastoGeneralConsolidado()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto general</button>
-  </td></tr>`;
-  html+=`<tr class="total-row"><td>Total costos</td><td class="neg">${fval(totCos)}</td>
-    <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
-    <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
-  tb.innerHTML=html;
+    });
+    html+=`<tr class="total-row"><td>Total costos por etapa</td><td class="neg">${fval(totCos)}</td>
+      <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
+      <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
+    tb.innerHTML=html;
+  }
+  renderConsolidadoM2();
+  renderConsolidadoGastosProyecto();
 }
 function toggleConsCosCentro(ci){
   consolidadoCostos[ci].expandido=!consolidadoCostos[ci].expandido;
@@ -1792,119 +1789,212 @@ function toggleConsCosSub(ci,pei,si){
   sc.expandido=!sc.expandido;
   renderConsolidadoCostos();
 }
-function toggleConsCosGeneral(ci){
-  consolidadoCostos[ci].general.expandido=!consolidadoCostos[ci].general.expandido;
-  renderConsolidadoCostos();
+
+/* ═══════════════════════════════════════════════════════════════
+   SUPERFICIE ÚTIL PROYECTADA POR ETAPA (m²) — valor editable a mano,
+   usado para prorratear los gastos de proyecto "por m² útil". No se
+   calcula de los lotes cargados porque el proyecto aún está en etapa
+   de anteproyecto y esos m² pueden cambiar.
+   ═══════════════════════════════════════════════════════════════ */
+function renderConsolidadoM2(){
+  var tb=document.getElementById('cons-m2-body');
+  if(!tb) return;
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var totalM2=etapasOrdenadas.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+  tb.innerHTML = etapasOrdenadas.map(function(e){
+    return `<tr>
+      <td style="text-align:left">${e.nombre}</td>
+      <td><input class="ci" type="number" min="0" step="1" value="${e.m2UtilesProyectados||0}" style="width:100px" onchange="editarM2Etapa(${e.id},+this.value||0)"/></td>
+    </tr>`;
+  }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
+}
+async function editarM2Etapa(etapaId, valor){
+  var e=etapas.find(function(x){return x.id===etapaId;});
+  if(!e) return;
+  e.m2UtilesProyectados=valor;
+  await sb.from('loteo_etapas').update({m2_utiles_proyectados:valor}).eq('id',etapaId);
+  await recalcularGastosDeProyecto();
+  await mostrarConsolidado();
 }
 
-async function agregarGastoGeneralConsolidado(){
-  var nombre=prompt('Nombre del centro de costo (puede ser uno que ya existe en las etapas, ej. "Urbanización", para sumarle un gasto general ahí, o uno nuevo, ej. "Arquitectura" o "Ingeniería"):');
-  if(!nombre||!nombre.trim()) return;
-  nombre=nombre.trim();
-  var existente=consolidadoCostos.find(function(c){return c.nombre===nombre;});
-  if(existente && existente.general){
-    alert('Ya existe un gasto general para "'+nombre+'". Ábrelo (+) para editarlo.');
+/* ═══════════════════════════════════════════════════════════════
+   GASTOS DE PROYECTO — se ingresan una sola vez con un monto total y
+   una forma de prorrateo, y se reparten automáticamente entre las
+   etapas (guardado como una partida "Gastos de Proyecto" dentro de
+   la Partida 2 de cada etapa que recibe una porción).
+   ═══════════════════════════════════════════════════════════════ */
+let gastosProyecto = [];
+let editandoGastoProyectoId = null;
+
+function _mapGastoProyectoRow(row){
+  return { id:row.id, nombre:row.nombre, monto:Number(row.monto), tipoProrrateo:row.tipo_prorrateo, etapaEspecificaId:row.etapa_especifica_id, expandido:false };
+}
+async function cargarGastosProyectoDesdeNube(){
+  var res=await sb.from('loteo_gastos_proyecto').select('*').order('id');
+  var abiertos=gastosProyecto.filter(function(g){return g.expandido;}).map(function(g){return g.id;});
+  gastosProyecto=(res.data||[]).map(_mapGastoProyectoRow);
+  gastosProyecto.forEach(function(g){ if(abiertos.indexOf(g.id)>=0) g.expandido=true; });
+}
+
+function _asignacionGastoProyecto(g, etapasList){
+  var asign={};
+  if(g.tipoProrrateo==='etapa'){
+    etapasList.forEach(function(e){asign[e.id]=0;});
+    if(g.etapaEspecificaId!=null) asign[g.etapaEspecificaId]=g.monto;
+  } else if(g.tipoProrrateo==='m2'){
+    var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+    if(totalM2>0){
+      etapasList.forEach(function(e){ asign[e.id]=g.monto*((e.m2UtilesProyectados||0)/totalM2); });
+    } else {
+      var n=etapasList.length||1;
+      etapasList.forEach(function(e){ asign[e.id]=g.monto/n; });
+    }
+  } else {
+    var n2=etapasList.length||1;
+    etapasList.forEach(function(e){ asign[e.id]=g.monto/n2; });
+  }
+  return asign;
+}
+function _pctAsignacionGastoProyecto(g, etapasList, etapaId){
+  if(g.tipoProrrateo==='etapa') return g.etapaEspecificaId===etapaId?100:0;
+  if(g.tipoProrrateo==='m2'){
+    var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+    if(totalM2>0){
+      var e=etapasList.find(function(x){return x.id===etapaId;});
+      return (e?e.m2UtilesProyectados||0:0)/totalM2*100;
+    }
+    return 100/(etapasList.length||1);
+  }
+  return 100/(etapasList.length||1);
+}
+function _tipoProrrateoLabel(tipo){
+  if(tipo==='m2') return 'por m² útil';
+  if(tipo==='etapa') return 'etapa específica';
+  return 'parejo entre etapas';
+}
+
+// Reconstruye la partida "Gastos de Proyecto" dentro de cada etapa a
+// partir de la lista actual de gastos de proyecto. Se regenera entera
+// cada vez (no se parchea), así que editar/eliminar un gasto de
+// proyecto se refleja solo en todas las etapas.
+async function recalcularGastosDeProyecto(){
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  for(const e of etapasOrdenadas){
+    var items=gastosProyecto.map(function(g){
+      var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+      var monto=asign[e.id]||0;
+      var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+      return { nombre: g.nombre+' — '+f1(pct)+'% de incidencia', cantidad:1, unitario:monto, und:'UN' };
+    }).filter(function(it){ return it.unitario>0.0001; });
+
+    var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').limit(1);
+    var existente=res.data && res.data[0];
+    if(items.length===0){
+      if(existente) await sb.from('loteo_centros').delete().eq('id', existente.id);
+      continue;
+    }
+    if(existente){
+      await sb.from('loteo_centros').update({items:items}).eq('id', existente.id);
+    } else {
+      await sb.from('loteo_centros').insert({
+        nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:false,
+        items:items, subcentros:[], orden:999
+      });
+    }
+  }
+}
+
+function renderConsolidadoGastosProyecto(){
+  var tb=document.getElementById('cons-gp-body');
+  if(!tb) return;
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var totalGP=gastosProyecto.reduce(function(a,g){return a+g.monto;},0);
+  if(gastosProyecto.length===0){
+    tb.innerHTML='<tr><td colspan="3" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin gastos de proyecto agregados</td></tr>';
     return;
   }
-  var cls=existente ? existente.cls : nextCls(consolidadoCostos.map(function(c){return {cls:c.cls};}));
-  var ins=await sb.from('loteo_centros').insert({
-    nombre:nombre, etapa_id:null, cls:cls, tiene_subcentros:false,
-    items:[{nombre:'Nuevo ítem', cantidad:1, unitario:0, und:'UN'}], subcentros:[], orden:0
-  }).select().single();
-  if(ins.error){ alert('No se pudo crear: '+ins.error.message); return; }
+  var html='';
+  gastosProyecto.forEach(function(g,gi){
+    html+=`<tr class="partida-row">
+      <td><button class="toggle-btn" onclick="toggleConsGastoProyecto(${gi})">${g.expandido?'−':'+'}</button>
+        <span class="tipo-badge tgen">${g.nombre}</span>
+        <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_tipoProrrateoLabel(g.tipoProrrateo)})</span></td>
+      <td class="neg">${fval(g.monto)}</td>
+      <td style="text-align:right">
+        <button class="icon-btn" onclick="abrirModalGastoProyecto(${g.id})" title="Editar"><i class="ti ti-pencil" style="font-size:12px"></i></button>
+        <button class="icon-btn" onclick="eliminarGastoProyecto(${g.id})" title="Eliminar"><i class="ti ti-trash" style="font-size:12px"></i></button>
+      </td></tr>`;
+    if(g.expandido){
+      var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+      etapasOrdenadas.forEach(function(e){
+        var monto=asign[e.id]||0;
+        if(monto<=0.0001) return;
+        var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+        html+=`<tr class="subcentro-row">
+          <td style="padding-left:22px"><span class="tipo-badge tgen" style="font-size:10px">${e.nombre}</span> <span class="muted">(${f1(pct)}% de incidencia)</span></td>
+          <td class="neg">${fval(monto)}</td><td></td></tr>`;
+      });
+    }
+  });
+  html+=`<tr class="total-row"><td>Total gastos de proyecto</td><td class="neg">${fval(totalGP)}</td><td></td></tr>`;
+  tb.innerHTML=html;
+}
+function toggleConsGastoProyecto(gi){
+  gastosProyecto[gi].expandido=!gastosProyecto[gi].expandido;
+  renderConsolidadoGastosProyecto();
+}
+
+function abrirModalGastoProyecto(id){
+  editandoGastoProyectoId=id||null;
+  document.getElementById('gp-modal-title').textContent=id?'Editar gasto de proyecto':'Agregar gasto de proyecto';
+  var selEtapa=document.getElementById('gp-etapa');
+  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  selEtapa.innerHTML=etapasOrdenadas.map(function(e){return `<option value="${e.id}">${e.nombre}</option>`;}).join('');
+  if(id){
+    var g=gastosProyecto.find(function(x){return x.id===id;});
+    document.getElementById('gp-nombre').value=g.nombre;
+    document.getElementById('gp-monto').value=g.monto;
+    document.getElementById('gp-tipo').value=g.tipoProrrateo;
+    if(g.etapaEspecificaId) selEtapa.value=g.etapaEspecificaId;
+  } else {
+    document.getElementById('gp-nombre').value='';
+    document.getElementById('gp-monto').value='';
+    document.getElementById('gp-tipo').value='m2';
+  }
+  onTipoProrrateoChange();
+  document.getElementById('gp-modal-overlay').classList.remove('hidden');
+}
+function cerrarModalGastoProyecto(){
+  document.getElementById('gp-modal-overlay').classList.add('hidden');
+  editandoGastoProyectoId=null;
+}
+function onTipoProrrateoChange(){
+  document.getElementById('gp-etapa-wrap').style.display=document.getElementById('gp-tipo').value==='etapa'?'':'none';
+}
+async function guardarGastoProyecto(){
+  var nombre=document.getElementById('gp-nombre').value.trim();
+  var monto=parseFloat(document.getElementById('gp-monto').value)||0;
+  var tipo=document.getElementById('gp-tipo').value;
+  var etapaEspecificaId=tipo==='etapa'?parseInt(document.getElementById('gp-etapa').value):null;
+  if(!nombre){ alert('Ingresa un nombre para el gasto.'); return; }
+  if(monto<=0){ alert('Ingresa un monto mayor a 0.'); return; }
+  var campos={nombre:nombre, monto:monto, tipo_prorrateo:tipo, etapa_especifica_id:etapaEspecificaId};
+  if(editandoGastoProyectoId){
+    await sb.from('loteo_gastos_proyecto').update(campos).eq('id', editandoGastoProyectoId);
+  } else {
+    await sb.from('loteo_gastos_proyecto').insert(campos);
+  }
+  cerrarModalGastoProyecto();
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto();
   await mostrarConsolidado();
 }
-
-async function editarItemGeneral(centroId, idx, campo, valor){
-  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
-  if(!c) return;
-  c.general.items[idx][campo]=valor;
-  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
-  c.general.total=c.general.items.reduce(function(a,it){return a+(it.cantidad||0)*(it.unitario||0);},0);
-  c.total=c.porEtapa.reduce(function(a,pe){return a+pe.total;},0)+c.general.total;
-  renderConsolidadoCostos();
-}
-
-async function agregarItemGeneral(centroId){
-  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
-  if(!c) return;
-  c.general.items.push({nombre:'Nuevo ítem', cantidad:1, unitario:0, und:'UN'});
-  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
-  renderConsolidadoCostos();
-}
-
-async function eliminarItemGeneral(centroId, idx){
-  var c=consolidadoCostos.find(function(x){return x.general && x.general.id===centroId;});
-  if(!c) return;
-  if(c.general.items.length<=1){ alert('Debe quedar al menos un ítem — si ya no necesitas esta categoría, elimínala completa.'); return; }
-  c.general.items.splice(idx,1);
-  await sb.from('loteo_centros').update({items:c.general.items}).eq('id',centroId);
+async function eliminarGastoProyecto(id){
+  if(!confirm('¿Eliminar este gasto de proyecto? Se quitará también de todas las etapas donde estaba prorrateado.')) return;
+  await sb.from('loteo_gastos_proyecto').delete().eq('id', id);
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto();
   await mostrarConsolidado();
-}
-
-async function eliminarCentroGeneral(centroId){
-  if(!confirm('¿Eliminar esta categoría de gasto general completa?')) return;
-  await sb.from('loteo_centros').delete().eq('id',centroId);
-  await mostrarConsolidado();
-}
-
-/* --- Sub-costos anidados dentro de un gasto general --- */
-async function _guardarCentroGeneral(g){
-  return sb.from('loteo_centros').update({
-    tiene_subcentros:g.tieneSubcentros, subcentros:g.subcentros||[], items:g.items||[]
-  }).eq('id', g.id);
-}
-function _recalcGeneralTotal(c){
-  c.general.total = calcCentro(c.general);
-}
-function toggleGeneralSubcentro(ci,si){
-  consolidadoCostos[ci].general.subcentros[si].expandido=!consolidadoCostos[ci].general.subcentros[si].expandido;
-  renderConsolidadoCostos();
-}
-async function addGeneralSubcentro(ci){
-  var g=consolidadoCostos[ci].general;
-  g.subcentros=g.subcentros||[];
-  g.subcentros.push({nombre:'Nueva subpartida', expandido:true, items:[{nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0}]});
-  g.tieneSubcentros=true;
-  await _guardarCentroGeneral(g);
-  _recalcGeneralTotal(consolidadoCostos[ci]);
-  renderConsolidadoCostos();
-}
-async function delGeneralSubcentro(ci,si){
-  var g=consolidadoCostos[ci].general;
-  if(g.subcentros.length<=1) return;
-  g.subcentros.splice(si,1);
-  await _guardarCentroGeneral(g);
-  _recalcGeneralTotal(consolidadoCostos[ci]);
-  renderConsolidadoCostos();
-}
-async function editGeneralSubcentroNombre(ci,si,valor){
-  var g=consolidadoCostos[ci].general;
-  g.subcentros[si].nombre=valor;
-  await _guardarCentroGeneral(g);
-  renderConsolidadoCostos();
-}
-async function addGeneralSubItem(ci,si){
-  var g=consolidadoCostos[ci].general;
-  g.subcentros[si].items.push({nombre:'Nuevo ítem', und:'UN', cantidad:1, unitario:0});
-  await _guardarCentroGeneral(g);
-  _recalcGeneralTotal(consolidadoCostos[ci]);
-  renderConsolidadoCostos();
-}
-async function delGeneralSubItem(ci,si,ii){
-  var g=consolidadoCostos[ci].general;
-  if(g.subcentros[si].items.length<=1) return;
-  g.subcentros[si].items.splice(ii,1);
-  await _guardarCentroGeneral(g);
-  _recalcGeneralTotal(consolidadoCostos[ci]);
-  renderConsolidadoCostos();
-}
-async function editGeneralSubItemCampo(ci,si,ii,campo,valor){
-  var g=consolidadoCostos[ci].general;
-  g.subcentros[si].items[ii][campo]=valor;
-  await _guardarCentroGeneral(g);
-  _recalcGeneralTotal(consolidadoCostos[ci]);
-  renderConsolidadoCostos();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -2448,6 +2538,27 @@ function buildCos(){
         </button></td>`;
       tb.appendChild(addScRow);
 
+    } else if(c.items && c.items.length){
+      // Centro sin sub-costos (ej. "Gastos de Proyecto", generado
+      // automáticamente desde Flujo de Proyecto) — ítems planos,
+      // de solo lectura acá; se editan desde donde se originan.
+      c.items.forEach((it)=>{
+        const tot=calcItem(it);
+        const itemReal=costoRealItem(c.nombre, it.nombre);
+        const itr=document.createElement('tr');
+        itr.className='subitem-row'+(exp?'':' hidden');
+        itr.innerHTML=`
+          <td style="padding-left:46px;color:var(--color-text-secondary)">
+              <i class="ti ti-corner-down-right" style="font-size:10px;margin-right:3px;color:var(--color-text-tertiary)"></i>
+              ${it.nombre}</td>
+          <td class="muted">${f1(it.cantidad)}</td>
+          <td class="muted">${funit(it.unitario)}</td>
+          <td class="neg">${fval(tot)}</td>
+          <td style="text-align:center">${fReal(itemReal)}</td>
+          <td style="text-align:center">${fVar(tot,itemReal)}</td>
+          <td></td>`;
+        tb.appendChild(itr);
+      });
     }
   });
 
@@ -3905,6 +4016,9 @@ document.getElementById('cot-modal-overlay').addEventListener('click',function(e
 });
 document.getElementById('casa-modal-overlay').addEventListener('click',function(e){
   if(e.target===this)cerrarModalCasa();
+});
+document.getElementById('gp-modal-overlay').addEventListener('click',function(e){
+  if(e.target===this)cerrarModalGastoProyecto();
 });
 
 /* ====================================================
