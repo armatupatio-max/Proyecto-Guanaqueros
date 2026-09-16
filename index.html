@@ -870,22 +870,6 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   <div class="ap-board" id="ap-board" style="display:none"></div>
   <input type="file" id="ap-col-file-input" multiple style="display:none" onchange="onApColFileChange(event)"/>
 
-  <!-- Solo en el tablero "General": superficie útil proyectada por etapa -->
-  <div id="ap-m2-panel" style="display:none;margin-top:20px">
-    <div class="section-hdr" style="background:#FEF3E2;border:0.5px solid #F5C97A">
-      <i class="ti ti-ruler-2" style="font-size:15px;color:#C47A0E"></i>
-      <span class="shdr-title" style="color:#7A4E05">Superficie útil proyectada por etapa</span>
-      <span class="shdr-badge" style="background:#C47A0E;color:#fff">m²</span>
-    </div>
-    <table class="ft" style="border:0.5px solid #F5C97A">
-      <colgroup><col style="width:70%"><col style="width:30%"></colgroup>
-      <thead><tr><th style="text-align:left">Etapa</th><th>m² útiles proyectados</th></tr></thead>
-      <tbody id="ap-m2-body"></tbody>
-    </table>
-    <div id="ap-m2-btn-wrap" style="margin-top:8px"></div>
-    <div style="font-size:11px;color:var(--color-text-tertiary);margin-top:6px">El proyecto aún está en etapa de anteproyecto, así que estos m² se ajustan a medida que avanza el diseño. Se usan para prorratear los gastos de proyecto "por m² útil" en Flujo de Proyecto.</div>
-  </div>
-
   <!-- Dentro de una carpeta: explorador simple -->
   <div class="ap-grid" id="ap-grid" style="display:none"></div>
 
@@ -1463,7 +1447,7 @@ async function cargarEtapasDesdeNube(){
     var ins = await sb.from('loteo_etapas').insert({nombre:'Etapa 1', orden:0}).select().single();
     rows = ins.data ? [ins.data] : [];
   }
-  etapas = rows.map(function(r){ return {id:r.id, nombre:r.nombre, orden:r.orden, m2UtilesProyectados:Number(r.m2_utiles_proyectados)||0}; });
+  etapas = rows.map(function(r){ return {id:r.id, nombre:r.nombre, orden:r.orden}; });
   if(!etapaActivaId || !etapas.some(function(e){return e.id===etapaActivaId;})){
     etapaActivaId = etapas[0].id;
   }
@@ -1491,7 +1475,7 @@ async function agregarEtapa(){
   if(ins.error){ alert('No se pudo crear la etapa: '+ins.error.message); return; }
   var nuevaEtapaId = ins.data.id;
   var etapaPlantillaId = etapas[0].id; // Etapa 1 = plantilla de Partida 2
-  etapas.push({id:nuevaEtapaId, nombre:ins.data.nombre, orden:ins.data.orden, m2UtilesProyectados:0});
+  etapas.push({id:nuevaEtapaId, nombre:ins.data.nombre, orden:ins.data.orden});
 
   // Clonar la estructura de Partida 2 (centros/subcentros/ítems) de la
   // etapa plantilla, pero vacía: mismos nombres, cantidades y
@@ -1515,9 +1499,7 @@ async function agregarEtapa(){
   etapaActivaId = nuevaEtapaId;
   lotes = [];
   centros = centrosClonados;
-  await _guardarLotesCentrosAhora(); // persiste el clon en la nueva etapa
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto(); // una etapa más cambia el prorrateo parejo/m2
+  await _guardarLotesCentrosAhora(); // persiste el clon y recalcula el prorrateo (una etapa más cambia parejo/m2)
   vistaConsolidado = false;
   document.getElementById('etapa-detalle-wrap').style.display = '';
   document.getElementById('consolidado-wrap').style.display = 'none';
@@ -1545,8 +1527,7 @@ async function eliminarEtapa(id){
   // etapa_especifica_id en null) — pasa a "Asignar a proyecto" hasta
   // que se elija un nuevo prorrateo.
   await sb.from('loteo_gastos_proyecto').update({tipo_prorrateo:'proyecto'}).eq('tipo_prorrateo','etapa').is('etapa_especifica_id', null);
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto(); // una etapa menos cambia el prorrateo parejo/m2
+  await refrescarGastosDeProyecto(); // una etapa menos cambia el prorrateo parejo/m2
   if(etapaActivaId===id){
     await seleccionarEtapa(etapas[0].id);
   } else {
@@ -1582,6 +1563,7 @@ async function _cargarLotesCentrosDeEtapaActiva(){
 
 let consolidadoIngresos = []; // [{etapaNombre, lotes:[...], total, expandido}]
 let consolidadoCostos = [];   // [{nombre, cls, total, real, expandido, porEtapa:[{etapaId, etapaNombre, total, centro, expandido}]}]
+let _m2PorEtapaCache = {};    // {etapaId: m2} — sacado de Partida 1 (lotes) de cada etapa, refrescado al entrar a Flujo de Proyecto
 
 async function mostrarConsolidado(){
   clearTimeout(_guardarLCTimer);
@@ -1605,9 +1587,11 @@ async function mostrarConsolidado(){
   await cargarGastosProyectoDesdeNube();
 
   consolidadoIngresos = [];
+  _m2PorEtapaCache = {};
   for(const e of etapasOrdenadas){
     var lotesRes = await sb.from('loteo_lotes').select('*').eq('etapa_id', e.id).order('orden');
     var lotesE = (lotesRes.data||[]).map(_mapLoteRow);
+    _m2PorEtapaCache[e.id] = lotesE.reduce(function(a,l){return a+l.unidades*l.m2;},0);
     var totE = lotesE.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
     consolidadoIngresos.push({etapaNombre:e.nombre, lotes:lotesE, total:totE, expandido:false});
 
@@ -1876,12 +1860,12 @@ function renderConsolidadoCostos(){
         if(g.tipoProrrateo==='proyecto'){
           html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:11px;color:var(--color-text-tertiary)">No se prorratea a ninguna etapa — queda registrado solo acá, en Flujo de Proyecto.</td></tr>`;
         } else {
-          var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+          var asign=_asignacionGastoProyecto(g, etapasOrdenadas, _m2PorEtapaCache);
           html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
           etapasOrdenadas.forEach(function(e){
             var monto=asign[e.id]||0;
             if(monto<=0.0001) return;
-            var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+            var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id, _m2PorEtapaCache);
             html+=`<tr class="subitem-row">
               <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${e.nombre} <span class="muted">(${f1(pct)}% de incidencia)</span></td>
               <td class="neg">${fval(monto)}</td><td></td><td></td></tr>`;
@@ -1945,7 +1929,7 @@ function calcGastoProyecto(g){
   return (g.items||[]).reduce(function(a,it){return a+calcItem(it);},0);
 }
 
-function _asignacionGastoProyecto(g, etapasList){
+function _asignacionGastoProyecto(g, etapasList, m2PorEtapa){
   var monto=calcGastoProyecto(g);
   var asign={};
   etapasList.forEach(function(e){asign[e.id]=0;});
@@ -1954,9 +1938,9 @@ function _asignacionGastoProyecto(g, etapasList){
   } else if(g.tipoProrrateo==='etapa'){
     if(g.etapaEspecificaId!=null) asign[g.etapaEspecificaId]=monto;
   } else if(g.tipoProrrateo==='m2'){
-    var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+    var totalM2=etapasList.reduce(function(a,e){return a+(m2PorEtapa[e.id]||0);},0);
     if(totalM2>0){
-      etapasList.forEach(function(e){ asign[e.id]=monto*((e.m2UtilesProyectados||0)/totalM2); });
+      etapasList.forEach(function(e){ asign[e.id]=monto*((m2PorEtapa[e.id]||0)/totalM2); });
     } else {
       var n=etapasList.length||1;
       etapasList.forEach(function(e){ asign[e.id]=monto/n; });
@@ -1967,19 +1951,30 @@ function _asignacionGastoProyecto(g, etapasList){
   }
   return asign;
 }
-function _pctAsignacionGastoProyecto(g, etapasList, etapaId){
+function _pctAsignacionGastoProyecto(g, etapasList, etapaId, m2PorEtapa){
   if(g.tipoProrrateo==='proyecto') return 0;
   if(g.tipoProrrateo==='etapa') return g.etapaEspecificaId===etapaId?100:0;
   if(g.tipoProrrateo==='m2'){
-    var totalM2=etapasList.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
+    var totalM2=etapasList.reduce(function(a,e){return a+(m2PorEtapa[e.id]||0);},0);
     if(totalM2>0){
-      var e=etapasList.find(function(x){return x.id===etapaId;});
-      return (e?e.m2UtilesProyectados||0:0)/totalM2*100;
+      return (m2PorEtapa[etapaId]||0)/totalM2*100;
     }
     return 100/(etapasList.length||1);
   }
   if(g.tipoProrrateo==='parejo') return 100/(etapasList.length||1);
   return 0;
+}
+// Superficie útil de una etapa = suma de unidades×m² de sus lotes
+// (Partida 1) — se consulta en vivo, no se guarda a mano en ningún
+// lado. Un mapa {etapaId: m2} para usar en toda la sesión de cálculo.
+async function _cargarM2PorEtapaDesdeLotes(){
+  var res=await sb.from('loteo_lotes').select('etapa_id,unidades,m2');
+  var m2PorEtapa={};
+  (res.data||[]).forEach(function(l){
+    var m2Lote=(Number(l.unidades)||0)*(Number(l.m2)||0);
+    m2PorEtapa[l.etapa_id]=(m2PorEtapa[l.etapa_id]||0)+m2Lote;
+  });
+  return m2PorEtapa;
 }
 function _tipoProrrateoLabel(tipo){
   if(tipo==='m2') return 'por m² útil';
@@ -2022,44 +2017,48 @@ function recalcularGastosDeProyecto(){
 }
 async function _recalcularGastosDeProyectoImpl(){
   var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var m2PorEtapa=await _cargarM2PorEtapaDesdeLotes();
+
+  // Arranca de cero: borra TODAS las filas "Gastos de Proyecto" de
+  // TODAS las etapas antes de volver a insertar las que correspondan.
+  // Es más simple y confiable que decidir update-vs-insert por etapa
+  // (esa lógica dejaba filas fantasma/duplicadas si algo se
+  // desincronizaba) — cada recálculo deja la base de datos reflejando
+  // exactamente el estado actual de gastosProyecto + m² de lotes.
+  await sb.from('loteo_centros').delete().eq('nombre','Gastos de Proyecto');
+
   for(const e of etapasOrdenadas){
     var subcentros=[];
     gastosProyecto.forEach(function(g){
       var totalG=calcGastoProyecto(g);
       if(totalG<=0.0001) return;
-      var asign=_asignacionGastoProyecto(g, etapasOrdenadas);
+      var asign=_asignacionGastoProyecto(g, etapasOrdenadas, m2PorEtapa);
       var montoE=asign[e.id]||0;
       if(montoE<=0.0001) return;
       var frac=montoE/totalG;
-      var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id);
+      var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id, m2PorEtapa);
       var itemsEscalados=_itemsPlanosGasto(g).map(function(it){
         return { nombre:it.nombre, und:it.und, cantidad:it.cantidad, unitario:it.unitario*frac };
       }).filter(function(it){ return it.cantidad*it.unitario>0.0001; });
       if(itemsEscalados.length===0) return;
       subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia ('+_tipoProrrateoLabel(g.tipoProrrateo)+')', expandido:false, items:itemsEscalados });
     });
-
-    var res=await sb.from('loteo_centros').select('id').eq('etapa_id', e.id).eq('nombre','Gastos de Proyecto').order('id');
-    var filas=res.data||[];
-    if(subcentros.length===0){
-      if(filas.length) await sb.from('loteo_centros').delete().in('id', filas.map(function(r){return r.id;}));
-      continue;
-    }
-    if(filas.length){
-      // Actualiza la primera fila; si hubiera quedado alguna duplicada
-      // (residuo de una corrida en paralelo antes de encolar los
-      // recalculos), se elimina para que no queden filas fantasma.
-      await sb.from('loteo_centros').update({tiene_subcentros:true, subcentros:subcentros, items:[]}).eq('id', filas[0].id);
-      if(filas.length>1){
-        await sb.from('loteo_centros').delete().in('id', filas.slice(1).map(function(r){return r.id;}));
-      }
-    } else {
-      await sb.from('loteo_centros').insert({
-        nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:true,
-        items:[], subcentros:subcentros, orden:999
-      });
-    }
+    if(subcentros.length===0) continue;
+    await sb.from('loteo_centros').insert({
+      nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:true,
+      items:[], subcentros:subcentros, orden:999
+    });
   }
+}
+// Refresca gastosProyecto desde la nube y vuelve a calcular su
+// prorrateo — usar siempre este helper (nunca llamar
+// recalcularGastosDeProyecto() solo) para no operar sobre un
+// gastosProyecto en memoria que todavía no se cargó (p.ej. al guardar
+// un lote apenas se abre la app, antes de haber entrado nunca a
+// Flujo de Proyecto).
+async function refrescarGastosDeProyecto(){
+  await cargarGastosProyectoDesdeNube();
+  await recalcularGastosDeProyecto();
 }
 
 function toggleConsGastoProyecto(gi){
@@ -2124,8 +2123,7 @@ async function guardarProrrateoGastos(){
     if(r.error){ alert('No se pudo guardar el prorrateo: '+r.error.message); return; }
   }
   cerrarModalProrratearGastos();
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto();
+  await refrescarGastosDeProyecto();
   await mostrarConsolidado();
 }
 
@@ -2160,16 +2158,14 @@ async function guardarGastoProyecto(){
   });
   if(resultado.error){ alert('No se pudo guardar el gasto de proyecto: '+resultado.error.message); return; }
   cerrarModalGastoProyecto();
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto();
+  await refrescarGastosDeProyecto();
   await mostrarConsolidado();
 }
 async function eliminarGastoProyecto(id){
   if(!confirm('¿Eliminar este gasto de proyecto? Se quitará también de todas las etapas donde estaba prorrateado.')) return;
   var resultado=await sb.from('loteo_gastos_proyecto').delete().eq('id', id);
   if(resultado.error){ alert('No se pudo eliminar: '+resultado.error.message); return; }
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto();
+  await refrescarGastosDeProyecto();
   await mostrarConsolidado();
 }
 
@@ -2306,9 +2302,34 @@ async function _guardarLotesCentrosAhora(){
           subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaAlGuardar };
       }));
     }
+    // La superficie útil de la etapa (Partida 1: unidades×m² de cada
+    // lote) puede haber cambiado, y de eso depende el prorrateo "por
+    // m² útil" de los gastos de proyecto — hay que recalcularlo cada
+    // vez que se guardan lotes, no solo cuando se edita un gasto.
+    await refrescarGastosDeProyecto();
+    await _refrescarCentroGastosProyectoEnMemoria(etapaAlGuardar);
   }catch(e){
     console.error('Error guardando lotes/centros en la nube', e);
   }
+}
+// La reinserción de arriba escribe en loteo_centros lo que había en
+// memoria (incluyendo una copia desactualizada de la fila "Gastos de
+// Proyecto" sintética, si la etapa activa tenía una) — refrescarGastosDeProyecto()
+// ya la corrige en la base de datos, pero el array `centros` en
+// memoria de la etapa que se está viendo se queda con la versión
+// vieja hasta que se vuelve a cargar la etapa. Esto la parcha en el
+// momento para que buildCos() la muestre ya actualizada.
+async function _refrescarCentroGastosProyectoEnMemoria(etapaId){
+  if(etapaId!==etapaActivaId) return;
+  var res=await sb.from('loteo_centros').select('*').eq('etapa_id', etapaId).eq('nombre','Gastos de Proyecto').limit(1);
+  var idx=centros.findIndex(function(c){return c.nombre==='Gastos de Proyecto';});
+  if(res.data && res.data[0]){
+    var fresh=_mapCentroRow(res.data[0]);
+    if(idx>=0) centros[idx]=fresh; else centros.push(fresh);
+  } else if(idx>=0){
+    centros.splice(idx,1);
+  }
+  buildCos();
 }
 var _guardarLCTimer = null;
 function guardarLotesCentrosEnNube(){
@@ -5667,69 +5688,6 @@ function renderAnteproyecto(){
   } else {
     renderApGridInto('ap-grid', apCarpetas, apArchivos);
   }
-
-  var tableroActual=apTableros.find(function(t){return t.id===apTableroActualId;});
-  var esGeneral = apCarpetaActualId===null && tableroActual && tableroActual.nombre==='General';
-  document.getElementById('ap-m2-panel').style.display = esGeneral ? '' : 'none';
-  if(esGeneral) renderApM2Panel();
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   SUPERFICIE ÚTIL PROYECTADA POR ETAPA (m²) — vive en Anteproyecto ›
-   General, abajo de las columnas de archivos. Valor editable a mano,
-   usado para prorratear los gastos de proyecto "por m² útil" en
-   Flujo de Proyecto. No se calcula de los lotes cargados porque el
-   proyecto aún está en etapa de anteproyecto y esos m² pueden cambiar.
-   ═══════════════════════════════════════════════════════════════ */
-let apM2EditMode = false;
-function renderApM2Panel(){
-  var tb=document.getElementById('ap-m2-body');
-  var btnWrap=document.getElementById('ap-m2-btn-wrap');
-  if(!tb) return;
-  var etapasOrdenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
-  var totalM2=etapasOrdenadas.reduce(function(a,e){return a+(e.m2UtilesProyectados||0);},0);
-  if(etapasOrdenadas.length===0){
-    tb.innerHTML='<tr><td colspan="2" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin etapas creadas todavía</td></tr>';
-    if(btnWrap) btnWrap.innerHTML='';
-    return;
-  }
-  if(apM2EditMode){
-    tb.innerHTML = etapasOrdenadas.map(function(e){
-      return `<tr>
-        <td style="text-align:left">${e.nombre}</td>
-        <td><input class="ci ap-m2-input" type="number" min="0" step="1" data-etapa-id="${e.id}" value="${e.m2UtilesProyectados||0}" style="width:100px"/></td>
-      </tr>`;
-    }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
-    if(btnWrap) btnWrap.innerHTML = `
-      <button class="btn-primary" style="height:30px;padding:0 12px;font-size:12px" onclick="guardarM2Etapas()"><i class="ti ti-device-floppy" style="font-size:13px"></i> Guardar cambios</button>
-      <button class="btn-cancel" style="height:30px;padding:0 12px;font-size:12px" onclick="cancelarEdicionM2()">Cancelar</button>`;
-  } else {
-    tb.innerHTML = etapasOrdenadas.map(function(e){
-      return `<tr><td style="text-align:left">${e.nombre}</td><td>${f1(e.m2UtilesProyectados||0)} m²</td></tr>`;
-    }).join('') + `<tr class="total-row"><td>Total</td><td>${f1(totalM2)} m²</td></tr>`;
-    if(btnWrap) btnWrap.innerHTML = `<button class="add-btn" style="height:30px;padding:0 12px;font-size:12px" onclick="activarEdicionM2()"><i class="ti ti-pencil" style="font-size:12px"></i> Editar metros</button>`;
-  }
-}
-function activarEdicionM2(){ apM2EditMode=true; renderApM2Panel(); }
-function cancelarEdicionM2(){ apM2EditMode=false; renderApM2Panel(); }
-async function guardarM2Etapas(){
-  var inputs=document.querySelectorAll('.ap-m2-input');
-  var updates=[];
-  inputs.forEach(function(inp){
-    var etapaId=parseInt(inp.dataset.etapaId,10);
-    var valor=+inp.value||0;
-    var e=etapas.find(function(x){return x.id===etapaId;});
-    if(e) e.m2UtilesProyectados=valor;
-    updates.push({id:etapaId, valor:valor});
-  });
-  for(const u of updates){
-    var r=await sb.from('loteo_etapas').update({m2_utiles_proyectados:u.valor}).eq('id', u.id);
-    if(r.error){ alert('No se pudo guardar el m² de una etapa: '+r.error.message); return; }
-  }
-  apM2EditMode=false;
-  await cargarGastosProyectoDesdeNube();
-  await recalcularGastosDeProyecto();
-  renderApM2Panel();
 }
 
 function apFolderCardHTML(c){
