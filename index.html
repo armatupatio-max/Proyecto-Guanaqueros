@@ -580,15 +580,15 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 <div class="etapa-tabs" id="etapa-tabs" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:16px"></div>
 
-<div id="etapa-detalle-wrap">
+<!-- Compartido entre Flujo por etapa y Flujo de Proyecto -->
 <div class="topbar">
-  <div class="hist-btns">
+  <div class="hist-btns" id="hist-btns-wrap">
     <button class="hbtn" id="btn-undo" onclick="undo()" disabled title="Deshacer"><i class="ti ti-arrow-left"></i></button>
     <button class="hbtn" id="btn-redo" onclick="redo()" disabled title="Rehacer"><i class="ti ti-arrow-right"></i></button>
   </div>
   <div class="uf-ref">
     <label>Valor UF:</label>
-    <input class="uf-input" id="uf-val" type="number" value="38500" step="100" min="1" onchange="recalc()"/>
+    <input class="uf-input" id="uf-val" type="number" value="38500" step="100" min="1" onchange="onUfValChange()"/>
     <span id="uf-status" style="font-size:10px;color:var(--color-text-tertiary);display:inline-flex;align-items:center;gap:3px">
       <i class="ti ti-loader" style="font-size:11px"></i> cargando…
     </span>
@@ -599,6 +599,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   </div>
 </div>
 
+<div id="etapa-detalle-wrap">
 <div class="metric-strip" id="metric-strip"></div>
 
 <div class="section-hdr ing">
@@ -1432,6 +1433,7 @@ async function seleccionarEtapa(id){
   etapaActivaId = id;
   document.getElementById('etapa-detalle-wrap').style.display = '';
   document.getElementById('consolidado-wrap').style.display = 'none';
+  document.getElementById('hist-btns-wrap').style.display = '';
   await _cargarLotesCentrosDeEtapaActiva();
 }
 
@@ -1474,6 +1476,7 @@ async function agregarEtapa(){
   vistaConsolidado = false;
   document.getElementById('etapa-detalle-wrap').style.display = '';
   document.getElementById('consolidado-wrap').style.display = 'none';
+  document.getElementById('hist-btns-wrap').style.display = '';
   await _cargarLotesCentrosDeEtapaActiva();
 }
 
@@ -1589,6 +1592,7 @@ async function mostrarConsolidado(){
   vistaConsolidado = true;
   renderEtapaTabs();
   document.getElementById('etapa-detalle-wrap').style.display = 'none';
+  document.getElementById('hist-btns-wrap').style.display = 'none';
   var wrap = document.getElementById('consolidado-wrap');
   wrap.style.display = '';
   wrap.innerHTML = '<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">Cargando…</div>';
@@ -1692,7 +1696,17 @@ function renderConsolidadoIngresos(){
       </tr>`;
     });
   });
-  html+=`<tr class="total-row"><td colspan="5">Total ingresos</td><td>${fval(totIng)}</td></tr>`;
+  var unidTotGlobal=consolidadoIngresos.reduce(function(a,e){return a+e.lotes.reduce(function(b,l){return b+l.unidades;},0);},0);
+  var m2TotGlobal=consolidadoIngresos.reduce(function(a,e){return a+e.lotes.reduce(function(b,l){return b+l.m2*l.unidades;},0);},0);
+  var promUfM2=m2TotGlobal>0?totIng/m2TotGlobal:0;
+  var promUfLote=unidTotGlobal>0?totIng/unidTotGlobal:0;
+  html+=`<tr class="total-row">
+    <td>Total ingresos</td>
+    <td>${unidTotGlobal}</td>
+    <td class="muted">${f1(m2TotGlobal)} m²</td>
+    <td class="muted">Prom ${f1(promUfM2)} UF/m²</td>
+    <td class="muted">Prom ${fval(promUfLote)}</td>
+    <td>${fval(totIng)}</td></tr>`;
   tb.innerHTML=html;
 }
 function toggleConsIng(ei){
@@ -1875,8 +1889,8 @@ function renderConsolidadoCostos(){
   </td></tr>`;
 
   html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td>
-    <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
-    <td style="text-align:center">${fVar(totCos+totalGP,totReal)}</td></tr>`;
+    <td style="text-align:center;font-weight:500">${fReal(totReal+totalGPReal)}</td>
+    <td style="text-align:center">${fVar(totCos+totalGP,totReal+totalGPReal)}</td></tr>`;
 
   tb.innerHTML=html;
   tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
@@ -2677,7 +2691,14 @@ function updateHeaders(){
     btn.innerHTML='<i class="ti ti-currency-dollar" style="font-size:13px"></i> Convertir a CLP';
   }
 }
-function toggleMoneda(){modoClp=!modoClp;updateHeaders();recalc()}
+function toggleMoneda(){
+  modoClp=!modoClp;
+  updateHeaders();
+  if(vistaConsolidado){ renderConsolidado(); } else { recalc(); }
+}
+function onUfValChange(){
+  if(vistaConsolidado){ renderConsolidado(); } else { recalc(); }
+}
 
 /* ---- BUILD ING ---- */
 function buildIng(){
@@ -2706,7 +2727,13 @@ function buildIng(){
   ar.innerHTML=`<td colspan="7" style="padding:5px 28px"><button class="add-btn ing-add" onclick="addLote()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar tipo de lote</button></td>`;
   tb.appendChild(ar);
   const ttr=document.createElement('tr');ttr.className='total-row';
-  ttr.innerHTML=`<td colspan="3">Total ingresos</td><td class="muted">${lotes.reduce((a,l)=>a+l.unidades,0)} lotes</td><td></td><td>${fval(totIngUF())}</td><td></td>`;
+  const totS=lotes.reduce((a,l)=>a+l.m2*l.unidades,0);
+  ttr.innerHTML=`<td>Total ingresos</td>
+    <td>${r.totU}</td>
+    <td class="muted">${f1(totS)} m²</td>
+    <td class="muted">Prom ${f1(r.ufm2p)} UF/m²</td>
+    <td class="muted">Prom ${fval(r.ufLp)}</td>
+    <td>${fval(r.totUF)}</td><td></td>`;
   tb.appendChild(ttr);
   tb.querySelectorAll('.ci.ni').forEach(autoGrowNI);
 }
@@ -3103,7 +3130,6 @@ async function renderResumenCentrosDeCosto(){
 
   var porCentroTotal={}, totalGeneral=0;
   var porEtapa={}; // etapaId -> {porCentro:{}, total:0}
-  var porCentroGeneral={}, totalGastoGeneral=0;
 
   todos.forEach(function(r){
     var monto=Number(r.monto);
@@ -3113,9 +3139,6 @@ async function renderResumenCentrosDeCosto(){
       if(!porEtapa[r.etapa_id]) porEtapa[r.etapa_id]={porCentro:{}, total:0};
       porEtapa[r.etapa_id].porCentro[r.centro]=(porEtapa[r.etapa_id].porCentro[r.centro]||0)+monto;
       porEtapa[r.etapa_id].total+=monto;
-    } else {
-      porCentroGeneral[r.centro]=(porCentroGeneral[r.centro]||0)+monto;
-      totalGastoGeneral+=monto;
     }
   });
 
@@ -3128,16 +3151,6 @@ async function renderResumenCentrosDeCosto(){
       <span class="shdr-badge res">${f1(totalGeneral)} UF</span>
     </div>
     ${_tablaResumenCentros(porCentroTotal, totalGeneral)}`;
-
-  if(totalGastoGeneral>0){
-    html+=`
-      <div class="section-hdr" style="background:#F1EFE8;border:0.5px solid #D3D1C7;margin-top:1rem">
-        <i class="ti ti-building-skyscraper" style="font-size:15px;color:#5F5E5A"></i>
-        <span class="shdr-title" style="color:#2C2C2A">Desglose — Gastos de Proyecto</span>
-        <span class="shdr-badge" style="background:#5F5E5A;color:#fff">${f1(totalGastoGeneral)} UF</span>
-      </div>
-      ${_tablaResumenCentros(porCentroGeneral, totalGastoGeneral)}`;
-  }
 
   etapasOrdenadas.forEach(function(e){
     var datos=porEtapa[e.id];
