@@ -1790,7 +1790,7 @@ function renderConsolidadoCostos(){
           <button class="sub-toggle" onclick="toggleConsGastoProyecto(${gi})">${g.expandido?'−':'+'}</button>
           <input class="ci ni" value="${g.nombre}" style="width:110px;font-size:12px;background:var(--color-background-info);border-color:transparent;font-weight:500"
             data-minw="110" oninput="autoGrowNI(this)" onchange="editarNombreGastoProyecto(${gi},this.value)"/>
-          <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_tipoProrrateoLabel(g.tipoProrrateo)})</span></td>
+          <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_resumenProrrateoGasto(g, etapasOrdenadas, _m2PorEtapaCache)})</span></td>
         <td class="neg">${fval(montoG)}</td>
         <td></td>
         <td style="text-align:center">
@@ -1981,6 +1981,25 @@ function _tipoProrrateoLabel(tipo){
   if(tipo==='etapa') return 'etapa específica';
   if(tipo==='parejo') return 'parejo entre etapas';
   return 'asignado a proyecto (sin prorratear)';
+}
+// Resumen corto del prorrateo para mostrar junto al nombre del gasto
+// en Flujo de Proyecto: en vez de solo decir el método, muestra a qué
+// etapas se le asignó y en qué %.
+function _resumenProrrateoGasto(g, etapasList, m2PorEtapa){
+  if(g.tipoProrrateo==='etapa'){
+    var e=etapasList.find(function(x){return x.id===g.etapaEspecificaId;});
+    return e ? '100% a '+e.nombre : _tipoProrrateoLabel(g.tipoProrrateo);
+  }
+  if(g.tipoProrrateo==='parejo') return 'Dividido en etapas';
+  if(g.tipoProrrateo==='m2'){
+    var partes=etapasList.map(function(e){
+      var pct=_pctAsignacionGastoProyecto(g, etapasList, e.id, m2PorEtapa);
+      if(pct<=0.0001) return null;
+      return f1(pct)+'% '+e.nombre;
+    }).filter(Boolean);
+    return partes.length ? partes.join(', ') : _tipoProrrateoLabel(g.tipoProrrateo);
+  }
+  return _tipoProrrateoLabel(g.tipoProrrateo);
 }
 
 // Reconstruye la partida "Gastos de Proyecto" dentro de cada etapa a
