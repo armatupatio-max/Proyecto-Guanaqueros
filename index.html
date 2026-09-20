@@ -1556,9 +1556,12 @@ async function calcularConsolidadoCostos(){
     (centrosRes.data||[]).map(_mapCentroRow).forEach(function(c){
       if(c.nombre==='Gastos de Proyecto') return; // se muestra aparte, sourced desde loteo_gastos_proyecto
       var tot=calcCentro(c);
-      if(!centrosPorNombre[c.nombre]) centrosPorNombre[c.nombre]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[]};
-      centrosPorNombre[c.nombre].total += tot;
-      centrosPorNombre[c.nombre].porEtapa.push({etapaId:e.id, etapaNombre:e.nombre, total:tot, centro:c, expandido:false});
+      // Se fusiona por nombre normalizado (sin tildes/mayúsculas/espacios
+      // sobrantes): "Areas verdes" y "Áreas verdes " son el mismo centro.
+      var clave=_claveCentro(c.nombre);
+      if(!centrosPorNombre[clave]) centrosPorNombre[clave]={nombre:c.nombre, cls:c.cls, total:0, expandido:false, porEtapa:[]};
+      centrosPorNombre[clave].total += tot;
+      centrosPorNombre[clave].porEtapa.push({etapaId:e.id, etapaNombre:e.nombre, total:tot, centro:c, expandido:false});
     });
   }
 
@@ -1566,24 +1569,29 @@ async function calcularConsolidadoCostos(){
   var realPorNombre = {};
   var realPorEtapaCentro = {};
   (regRes.data||[]).forEach(function(r){
-    realPorNombre[r.centro] = (realPorNombre[r.centro]||0) + Number(r.monto);
+    var claveR=_claveCentro(r.centro);
+    realPorNombre[claveR] = (realPorNombre[claveR]||0) + Number(r.monto);
     if(r.etapa_id){
-      var key=r.etapa_id+'|'+r.centro;
+      var key=r.etapa_id+'|'+claveR;
       realPorEtapaCentro[key] = (realPorEtapaCentro[key]||0) + Number(r.monto);
     }
   });
 
   consolidadoCostos = Object.values(centrosPorNombre);
   consolidadoCostos.forEach(function(c){
-    c.real = realPorNombre[c.nombre]||0;
-    c.porEtapa.forEach(function(pe){ pe.real = realPorEtapaCentro[pe.etapaId+'|'+c.nombre]||0; });
+    var claveC=_claveCentro(c.nombre);
+    c.real = realPorNombre[claveC]||0;
+    c.porEtapa.forEach(function(pe){ pe.real = realPorEtapaCentro[pe.etapaId+'|'+claveC]||0; });
   });
   // Gastos de proyecto: se registran con ámbito "Gasto de proyecto"
   // (etapa_id null) y centro = nombre del gasto — mismo criterio de
   // match por nombre que el resto.
-  gastosProyecto.forEach(function(g){ g.real = realPorNombre[g.nombre]||0; });
+  gastosProyecto.forEach(function(g){ g.real = realPorNombre[_claveCentro(g.nombre)]||0; });
 
   return {realPorNombre:realPorNombre, realPorEtapaCentro:realPorEtapaCentro};
+}
+function _claveCentro(nombre){
+  return String(nombre||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
 }
 
 async function mostrarConsolidado(){
@@ -2303,19 +2311,29 @@ async function cargarLotesCentrosDesdeNube(){
   actualizarNombresEtapaEnHeaders();
   recalc();
 }
-async function _guardarLotesCentrosAhora(){
-  if(!sb || !etapaActivaId) return;
+// Los guardados se encolan en una cadena de promesas: cada uno hace
+// "borrar todo + reinsertar" de la etapa, así que si dos corrieran en
+// paralelo (p. ej. el guardado con retraso de una edición y el que se
+// dispara al cambiar de pestaña) ambos borrarían y luego ambos
+// insertarían, dejando lotes/centros DUPLICADOS en la etapa. Se toma
+// la foto (etapa + datos) al momento de pedir el guardado, antes de
+// esperar el turno, para no mezclar datos de dos etapas distintas.
+let _guardarLCChain = Promise.resolve();
+function _guardarLotesCentrosAhora(){
+  if(!sb || !etapaActivaId) return Promise.resolve();
   if(!datosListos){
     console.warn('Guardado de lotes/centros bloqueado: los datos de la etapa activa todavía no terminaban de cargar.');
-    return;
+    return Promise.resolve();
   }
-  // Se toma una foto de todo (etapa destino + datos) ANTES del primer
-  // await, para que si algo más cambia etapaActivaId/lotes/centros
-  // mientras este guardado está en vuelo, no se mezclen datos de dos
-  // etapas distintas.
   var etapaAlGuardar = etapaActivaId;
   var lotesAlGuardar = lotes;
   var centrosAlGuardar = centros;
+  _guardarLCChain = _guardarLCChain.then(function(){
+    return _ejecutarGuardadoLotesCentros(etapaAlGuardar, lotesAlGuardar, centrosAlGuardar);
+  }).catch(function(e){ console.error('Error en la cola de guardado de lotes/centros', e); });
+  return _guardarLCChain;
+}
+async function _ejecutarGuardadoLotesCentros(etapaAlGuardar, lotesAlGuardar, centrosAlGuardar){
   try{
     await sb.from('loteo_lotes').delete().eq('etapa_id', etapaAlGuardar);
     await sb.from('loteo_centros').delete().eq('etapa_id', etapaAlGuardar);
@@ -3207,7 +3225,7 @@ function docBadge(tipo){
    de Proyecto), no en la etapa activa, ya que este registro puede
    pertenecer a cualquier etapa o a un gasto de proyecto */
 function centroBadge(nombre){
-  const c=consolidadoCostos.find(x=>x.nombre===nombre);
+  const c=consolidadoCostos.find(x=>_claveCentro(x.nombre)===_claveCentro(nombre));
   const cls=c?c.cls:'tgen';
   return `<span class="tipo-badge ${cls}">${nombre||'—'}</span>`;
 }
@@ -3620,28 +3638,28 @@ function toggleCmpGastoSub(gi,si){
 // que trabajan sobre `registros` de la etapa activa nada más — acá se
 // necesita el real de una etapa específica sin importar cuál esté activa).
 function _realSubcentroEtapa(centro, subNombre, etapaId){
-  return regsGlobal.filter(function(r){ return r.centro===centro && r.etapaId===etapaId && r.subcentro===subNombre; })
+  return regsGlobal.filter(function(r){ return _claveCentro(r.centro)===_claveCentro(centro) && r.etapaId===etapaId && r.subcentro===subNombre; })
     .reduce(function(a,r){return a+r.monto;},0);
 }
 function _realItemEnSubcentroEtapa(centro, subNombre, itNombre, etapaId){
   return regsGlobal.filter(function(r){
-    return r.centro===centro && r.etapaId===etapaId && r.subcentro===subNombre && (r.desglose===itNombre||r.subcentro===itNombre);
+    return _claveCentro(r.centro)===_claveCentro(centro) && r.etapaId===etapaId && r.subcentro===subNombre && (r.desglose===itNombre||r.subcentro===itNombre);
   }).reduce(function(a,r){return a+r.monto;},0);
 }
 function _realItemPlanoEtapa(centro, itNombre, etapaId){
   return regsGlobal.filter(function(r){
-    return r.centro===centro && r.etapaId===etapaId && (r.subcentro===itNombre || r.desglose===itNombre);
+    return _claveCentro(r.centro)===_claveCentro(centro) && r.etapaId===etapaId && (r.subcentro===itNombre || r.desglose===itNombre);
   }).reduce(function(a,r){return a+r.monto;},0);
 }
 // Igual que las anteriores, pero para gastos de proyecto: no están
 // atados a una etapa (etapaId null).
 function _realSubcentroProyecto(centro, subNombre){
-  return regsGlobal.filter(function(r){ return r.centro===centro && r.etapaId==null && r.subcentro===subNombre; })
+  return regsGlobal.filter(function(r){ return _claveCentro(r.centro)===_claveCentro(centro) && r.etapaId==null && r.subcentro===subNombre; })
     .reduce(function(a,r){return a+r.monto;},0);
 }
 function _realItemProyecto(centro, subNombre, itNombre){
   return regsGlobal.filter(function(r){
-    if(r.centro!==centro || r.etapaId!=null) return false;
+    if(_claveCentro(r.centro)!==_claveCentro(centro) || r.etapaId!=null) return false;
     if(subNombre!=null) return r.subcentro===subNombre && (r.desglose===itNombre||r.subcentro===itNombre);
     return r.subcentro===itNombre || r.desglose===itNombre;
   }).reduce(function(a,r){return a+r.monto;},0);
