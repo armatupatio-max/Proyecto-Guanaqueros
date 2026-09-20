@@ -1202,6 +1202,7 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
             <select class="form-control" id="sens-tipo">
               <option value="ing">Ingresos (Partida 1 — UF / m²)</option>
               <option value="cos">Costos (Partida 2 — Unitario)</option>
+              <option value="ambos">Ingresos y Costos</option>
             </select>
           </div>
           <div class="form-group full">
@@ -2826,7 +2827,8 @@ function renderSensLista(){
 }
 function abrirFormSensibilidad(){
   const ord=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
-  document.getElementById('sens-etapa').innerHTML=ord.map(function(e){return `<option value="${e.id}">${e.nombre}</option>`;}).join('');
+  document.getElementById('sens-etapa').innerHTML=ord.map(function(e){return `<option value="${e.id}">${e.nombre}</option>`;}).join('')
+    +'<option value="todas">Proyecto completo (todas las etapas)</option>';
   const activa=etapas.find(function(e){return e.id===etapaActivaId;});
   if(activa && !vistaConsolidado) document.getElementById('sens-etapa').value=String(activa.id);
   document.getElementById('sens-tipo').value='ing';
@@ -2839,8 +2841,11 @@ function abrirFormSensibilidad(){
   document.getElementById('sens-btn-guardar').style.display='';
 }
 function _precargarFactorSens(){
-  const s=_sensFactores(parseInt(document.getElementById('sens-etapa').value,10));
-  document.getElementById('sens-factor').value=document.getElementById('sens-tipo').value==='ing'?s.ing:s.cos;
+  const ev=document.getElementById('sens-etapa').value, tipo=document.getElementById('sens-tipo').value;
+  // Para "todas las etapas" o "Ingresos y Costos" no hay un único valor actual: se propone 1.
+  if(ev==='todas' || tipo==='ambos'){ document.getElementById('sens-factor').value=1; return; }
+  const s=_sensFactores(parseInt(ev,10));
+  document.getElementById('sens-factor').value=tipo==='ing'?s.ing:s.cos;
 }
 function cerrarFormSensibilidad(){
   document.getElementById('sens-form').style.display='none';
@@ -2850,15 +2855,21 @@ function cerrarFormSensibilidad(){
   document.getElementById('sens-btn-guardar').style.display='none';
 }
 async function guardarSensibilidad(){
-  const etapaId=parseInt(document.getElementById('sens-etapa').value,10);
+  const ev=document.getElementById('sens-etapa').value;
+  const ids=ev==='todas' ? etapas.map(function(x){return x.id;}) : [parseInt(ev,10)];
   const tipo=document.getElementById('sens-tipo').value;
   const factor=parseFloat(document.getElementById('sens-factor').value);
   if(!Number.isFinite(factor) || factor<=0){ alert('Ingresa un multiplicador mayor a 0 (por ejemplo 0.7, 1 o 1.2).'); return; }
-  const campo=tipo==='ing'?'sens_ingresos':'sens_costos';
-  const r=await sb.from('loteo_etapas').update({[campo]:factor}).eq('id',etapaId);
+  const cambios={};
+  if(tipo==='ing' || tipo==='ambos') cambios.sens_ingresos=factor;
+  if(tipo==='cos' || tipo==='ambos') cambios.sens_costos=factor;
+  const r=await sb.from('loteo_etapas').update(cambios).in('id',ids);
   if(r.error){ alert('No se pudo guardar la sensibilidad: '+r.error.message); return; }
-  const e=etapas.find(function(x){return x.id===etapaId;});
-  if(e){ if(tipo==='ing') e.sensIng=factor; else e.sensCos=factor; }
+  etapas.forEach(function(e){
+    if(ids.indexOf(e.id)<0) return;
+    if(tipo==='ing' || tipo==='ambos') e.sensIng=factor;
+    if(tipo==='cos' || tipo==='ambos') e.sensCos=factor;
+  });
   renderSensLista();
   cerrarFormSensibilidad();
   if(vistaConsolidado){ await mostrarConsolidado(); } else { recalc(); }
