@@ -1493,8 +1493,7 @@ async function cargarEtapasDesdeNube(){
 }
 
 async function seleccionarEtapa(id){
-  clearTimeout(_guardarLCTimer);
-  await _guardarLotesCentrosAhora(); // asegura que lo pendiente de la etapa anterior quede guardado
+  await _guardarSiHayCambios(); // guarda lo pendiente de la etapa anterior (solo si se editó algo)
   datosListos = false;
   vistaConsolidado = false;
   etapaActivaId = id;
@@ -1508,8 +1507,7 @@ async function agregarEtapa(){
   var nombre = prompt('Nombre de la nueva etapa:', 'Etapa '+(etapas.length+1));
   if(!nombre) return;
 
-  clearTimeout(_guardarLCTimer);
-  await _guardarLotesCentrosAhora(); // guarda lo pendiente de la etapa actual antes de cambiar
+  await _guardarSiHayCambios(); // guarda lo pendiente de la etapa actual antes de cambiar
 
   var ins = await sb.from('loteo_etapas').insert({nombre:nombre.trim(), orden:etapas.length}).select().single();
   if(ins.error){ alert('No se pudo crear la etapa: '+ins.error.message); return; }
@@ -1620,12 +1618,16 @@ function togglePlanoEtapa(){
 
 async function _cargarLotesCentrosDeEtapaActiva(){
   datosListos = false;
-  var lotesRes   = await sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden');
-  var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden');
-  lotes   = (lotesRes.data||[]).map(_mapLoteRow);
-  centros = (centrosRes.data||[]).map(_mapCentroRow);
+  // Lotes, centros y registros de la etapa se piden en paralelo.
+  var cargas = await Promise.all([
+    sb.from('loteo_lotes').select('*').eq('etapa_id', etapaActivaId).order('orden'),
+    sb.from('loteo_centros').select('*').eq('etapa_id', etapaActivaId).order('orden'),
+    cargarRegistrosDesdeNube()
+  ]);
+  lotes   = (cargas[0].data||[]).map(_mapLoteRow);
+  centros = (cargas[1].data||[]).map(_mapCentroRow);
+  _lcPendiente = false;
   datosListos = true;
-  await cargarRegistrosDesdeNube();
   history = [JSON.parse(JSON.stringify({lotes,centros,registros}))];
   histIdx = 0;
   updateHistBtns();
@@ -1649,11 +1651,19 @@ async function calcularConsolidadoCostos(){
   var etapasOrdenadas = [...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
   var centrosPorNombre = {}; // nombre -> {nombre, cls, total, porEtapa:[]}
 
-  await cargarGastosProyectoDesdeNube();
+  // Tres consultas en paralelo (antes: gastos, luego una por etapa y
+  // luego registros, todas en serie).
+  var resultados = await Promise.all([
+    cargarGastosProyectoDesdeNube(),
+    sb.from('loteo_centros').select('*').order('orden'),
+    sb.from('loteo_registros_gastos').select('centro,monto,etapa_id')
+  ]);
+  var centrosPorEtapa = {};
+  (resultados[1].data||[]).forEach(function(r){ (centrosPorEtapa[r.etapa_id]=centrosPorEtapa[r.etapa_id]||[]).push(r); });
+  var regRes = resultados[2];
 
   for(const e of etapasOrdenadas){
-    var centrosRes = await sb.from('loteo_centros').select('*').eq('etapa_id', e.id).order('orden');
-    (centrosRes.data||[]).map(_mapCentroRow).map(function(c0){ return c0.nombre==='Gastos de Proyecto' ? c0 : _escalarCentro(c0, _sensFactores(e.id).cos); }).forEach(function(c){
+    (centrosPorEtapa[e.id]||[]).map(_mapCentroRow).map(function(c0){ return c0.nombre==='Gastos de Proyecto' ? c0 : _escalarCentro(c0, _sensFactores(e.id).cos); }).forEach(function(c){
       if(c.nombre==='Gastos de Proyecto') return; // se muestra aparte, sourced desde loteo_gastos_proyecto
       var tot=calcCentro(c);
       // Se fusiona por nombre normalizado (sin tildes/mayúsculas/espacios
@@ -1665,7 +1675,6 @@ async function calcularConsolidadoCostos(){
     });
   }
 
-  var regRes = await sb.from('loteo_registros_gastos').select('centro,monto,etapa_id');
   var realPorNombre = {};
   var realPorEtapaCentro = {};
   (regRes.data||[]).forEach(function(r){
@@ -1695,8 +1704,7 @@ function _claveCentro(nombre){
 }
 
 async function mostrarConsolidado(){
-  clearTimeout(_guardarLCTimer);
-  await _guardarLotesCentrosAhora();
+  await _guardarSiHayCambios();
   vistaConsolidado = true;
   renderEtapaTabs();
   document.getElementById('etapa-detalle-wrap').style.display = 'none';
@@ -1715,15 +1723,20 @@ async function mostrarConsolidado(){
 
   consolidadoIngresos = [];
   _m2PorEtapaCache = {};
+  // Una sola consulta para los lotes de todas las etapas (antes una por
+  // etapa), en paralelo con los centros/gastos/registros de Partida 2.
+  var resultados = await Promise.all([
+    sb.from('loteo_lotes').select('*').order('orden'),
+    calcularConsolidadoCostos()
+  ]);
+  var lotesPorEtapa = {};
+  (resultados[0].data||[]).forEach(function(r){ (lotesPorEtapa[r.etapa_id]=lotesPorEtapa[r.etapa_id]||[]).push(r); });
   for(const e of etapasOrdenadas){
-    var lotesRes = await sb.from('loteo_lotes').select('*').eq('etapa_id', e.id).order('orden');
-    var lotesE = _escalarLotes((lotesRes.data||[]).map(_mapLoteRow), _sensFactores(e.id).ing);
+    var lotesE = _escalarLotes((lotesPorEtapa[e.id]||[]).map(_mapLoteRow), _sensFactores(e.id).ing);
     _m2PorEtapaCache[e.id] = lotesE.reduce(function(a,l){return a+l.unidades*l.m2;},0);
     var totE = lotesE.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
     consolidadoIngresos.push({etapaNombre:e.nombre, lotes:lotesE, total:totE, expandido:false});
   }
-
-  await calcularConsolidadoCostos();
 
   renderConsolidado();
 }
@@ -2256,6 +2269,9 @@ async function _recalcularGastosDeProyectoImpl(){
   // exactamente el estado actual de gastosProyecto + m² de lotes.
   await sb.from('loteo_centros').delete().eq('nombre','Gastos de Proyecto');
 
+  // Se arman las filas de todas las etapas y se insertan de una vez
+  // (antes: un insert por etapa, en serie).
+  var filasGP = [];
   for(const e of etapasOrdenadas){
     var subcentros=[];
     gastosProyecto.forEach(function(g){
@@ -2273,11 +2289,12 @@ async function _recalcularGastosDeProyectoImpl(){
       subcentros.push({ nombre: g.nombre+' — '+f1(pct)+'% de incidencia ('+_tipoProrrateoLabel(g.tipoProrrateo)+')', expandido:false, items:itemsEscalados });
     });
     if(subcentros.length===0) continue;
-    await sb.from('loteo_centros').insert({
+    filasGP.push({
       nombre:'Gastos de Proyecto', cls:'tgen', etapa_id:e.id, tiene_subcentros:true,
       items:[], subcentros:subcentros, orden:999
     });
   }
+  if(filasGP.length) await sb.from('loteo_centros').insert(filasGP);
 }
 // Refresca gastosProyecto desde la nube y vuelve a calcular su
 // prorrateo — usar siempre este helper (nunca llamar
@@ -2518,6 +2535,7 @@ function _guardarLotesCentrosAhora(){
     console.warn('Guardado de lotes/centros bloqueado: los datos de la etapa activa todavía no terminaban de cargar.');
     return Promise.resolve();
   }
+  _lcPendiente = false;
   var etapaAlGuardar = etapaActivaId;
   var lotesAlGuardar = lotes;
   var centrosAlGuardar = centros;
@@ -2528,19 +2546,27 @@ function _guardarLotesCentrosAhora(){
 }
 async function _ejecutarGuardadoLotesCentros(etapaAlGuardar, lotesAlGuardar, centrosAlGuardar){
   try{
-    await sb.from('loteo_lotes').delete().eq('etapa_id', etapaAlGuardar);
-    await sb.from('loteo_centros').delete().eq('etapa_id', etapaAlGuardar);
-    if(lotesAlGuardar.length){
-      await sb.from('loteo_lotes').insert(lotesAlGuardar.map(function(l,i){
-        return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i, etapa_id:etapaAlGuardar };
-      }));
-    }
-    if(centrosAlGuardar.length){
-      await sb.from('loteo_centros').insert(centrosAlGuardar.map(function(c,i){
-        return { nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros,
-          subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaAlGuardar };
-      }));
-    }
+    // Lotes y centros son tablas independientes: se reescriben en paralelo
+    // (cada una en orden borrar -> insertar).
+    await Promise.all([
+      (async function(){
+        await sb.from('loteo_lotes').delete().eq('etapa_id', etapaAlGuardar);
+        if(lotesAlGuardar.length){
+          await sb.from('loteo_lotes').insert(lotesAlGuardar.map(function(l,i){
+            return { nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:i, etapa_id:etapaAlGuardar };
+          }));
+        }
+      })(),
+      (async function(){
+        await sb.from('loteo_centros').delete().eq('etapa_id', etapaAlGuardar);
+        if(centrosAlGuardar.length){
+          await sb.from('loteo_centros').insert(centrosAlGuardar.map(function(c,i){
+            return { nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros,
+              subcentros:c.subcentros||[], items:c.items||[], orden:i, etapa_id:etapaAlGuardar };
+          }));
+        }
+      })()
+    ]);
     // La superficie útil de la etapa (Partida 1: unidades×m² de cada
     // lote) puede haber cambiado, y de eso depende el prorrateo "por
     // m² útil" de los gastos de proyecto — hay que recalcularlo cada
@@ -2571,9 +2597,21 @@ async function _refrescarCentroGastosProyectoEnMemoria(etapaId){
   buildCos();
 }
 var _guardarLCTimer = null;
+// true desde que se edita algo en la etapa activa hasta que se guarda.
+// Cambiar de etapa o entrar a Flujo de Proyecto solo guarda si hay
+// cambios pendientes (antes reescribía la etapa completa y recalculaba
+// el prorrateo de gastos de proyecto en cada clic, aunque no se hubiera
+// editado nada).
+var _lcPendiente = false;
 function guardarLotesCentrosEnNube(){
+  _lcPendiente = true;
   clearTimeout(_guardarLCTimer);
   _guardarLCTimer = setTimeout(_guardarLotesCentrosAhora, 900);
+}
+function _guardarSiHayCambios(){
+  clearTimeout(_guardarLCTimer);
+  if(_lcPendiente) return _guardarLotesCentrosAhora();
+  return _guardarLCChain; // espera un guardado que ya esté en curso, si lo hay
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -3425,8 +3463,10 @@ _initAuthCheck();
    ============================ */
 
 async function initRegistroPanel(){
-  await cargarRegsGlobalDesdeNube();
-  await calcularConsolidadoCostos(); // fusiona Partida 2 de todas las etapas + gastos de proyecto, con su costo real
+  await Promise.all([
+    cargarRegsGlobalDesdeNube(),
+    calcularConsolidadoCostos() // fusiona Partida 2 de todas las etapas + gastos de proyecto, con su costo real
+  ]);
   poblarFiltros();
   renderRegistros();
   renderSummary();
