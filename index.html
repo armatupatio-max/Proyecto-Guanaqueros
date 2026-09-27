@@ -90,6 +90,12 @@ body{font-family:var(--font-sans);font-size:13px;color:var(--color-text-primary)
 .section-hdr.cos{background:#FCEBEB;border:0.5px solid #F7C1C1;border-bottom:none}
 .section-hdr.res{background:#EAF3DE;border:0.5px solid #C0DD97;border-bottom:none}
 .section-hdr.reg{background:#F4EEF9;border:0.5px solid #D9C5EE;border-bottom:none}
+.section-hdr.plano{background:#FFF4E5;border:0.5px solid #F5C97A;border-bottom:none;cursor:pointer;user-select:none}
+.shdr-title.plano{color:#7A4E05}
+.shdr-badge.plano{background:#C77A06;color:#fff}
+.plano-etapa-body{border:0.5px solid #F5C97A;border-radius:0 0 var(--border-radius-md) var(--border-radius-md);background:#fff;padding:10px;margin-bottom:1.25rem;text-align:center}
+.plano-etapa-body img{max-width:100%;max-height:640px;object-fit:contain;cursor:zoom-in}
+.plano-etapa-nota{font-size:11px;color:var(--color-text-tertiary);margin-top:6px}
 .shdr-title{font-size:13px;font-weight:500}
 .shdr-title.ing{color:#0C447C}.shdr-title.cos{color:#791F1F}.shdr-title.res{color:#27500A}.shdr-title.reg{color:#4A1E72}
 .shdr-badge{font-size:11px;padding:2px 8px;border-radius:99px;font-weight:500;margin-left:auto}
@@ -605,6 +611,20 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 <div id="etapa-detalle-wrap">
 <div id="sens-banner" style="display:none;margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#FEF3E2;border:0.5px solid #F5C97A;color:#7A4E05;font-size:12px"></div>
 <div class="metric-strip" id="metric-strip"></div>
+
+<!-- Plano de urbanización de la etapa activa (img/etapas/etapa-NN.png) -->
+<div id="plano-etapa-wrap" style="display:none">
+  <div class="section-hdr plano" onclick="togglePlanoEtapa()" title="Mostrar / ocultar plano">
+    <i class="ti ti-map-2" style="font-size:15px;color:#C77A06"></i>
+    <span class="shdr-title plano">Plano de urbanización · <span id="etapa-nombre-plano">Etapa 1</span></span>
+    <i id="plano-etapa-chevron" class="ti ti-chevron-up" style="font-size:14px;color:#7A4E05"></i>
+    <span class="shdr-badge plano">Plano</span>
+  </div>
+  <div class="plano-etapa-body" id="plano-etapa-body">
+    <img id="plano-etapa-img" alt="Plano de urbanización de la etapa" onclick="window.open(this.src,'_blank')" onerror="document.getElementById('plano-etapa-wrap').style.display='none'"/>
+    <div class="plano-etapa-nota">Clic en la imagen para verla en tamaño completo.</div>
+  </div>
+</div>
 
 <div class="section-hdr ing">
   <i class="ti ti-building-estate" style="font-size:15px;color:#185FA5"></i>
@@ -1559,10 +1579,40 @@ async function eliminarEtapa(id){
 function actualizarNombresEtapaEnHeaders(){
   var etapa = etapas.find(function(e){return e.id===etapaActivaId;});
   var nombre = etapa ? etapa.nombre : '';
-  ['etapa-nombre-ing','etapa-nombre-cos','etapa-nombre-res'].forEach(function(id){
+  ['etapa-nombre-ing','etapa-nombre-cos','etapa-nombre-res','etapa-nombre-plano'].forEach(function(id){
     var el = document.getElementById(id);
     if(el) el.textContent = nombre;
   });
+  actualizarPlanoEtapa(nombre);
+}
+
+// Plano de urbanización de la etapa: se toma el número del nombre
+// ("Etapa 7" -> img/etapas/etapa-07.png). Si la etapa no tiene número
+// o no existe la imagen, el bloque se oculta.
+function actualizarPlanoEtapa(nombre){
+  var wrap = document.getElementById('plano-etapa-wrap');
+  var img  = document.getElementById('plano-etapa-img');
+  if(!wrap || !img) return;
+  var m = String(nombre||'').match(/(\d+)/);
+  if(!m){ wrap.style.display = 'none'; img.removeAttribute('src'); return; }
+  var nn = ('0'+parseInt(m[1],10)).slice(-2);
+  img.src = 'img/etapas/etapa-'+nn+'.png';
+  wrap.style.display = '';
+  _aplicarPlanoColapsado();
+}
+function _aplicarPlanoColapsado(){
+  var oculto = false;
+  try{ oculto = localStorage.getItem('planoEtapaOculto')==='1'; }catch(e){}
+  var body = document.getElementById('plano-etapa-body');
+  var chev = document.getElementById('plano-etapa-chevron');
+  if(body) body.style.display = oculto ? 'none' : '';
+  if(chev) chev.className = oculto ? 'ti ti-chevron-down' : 'ti ti-chevron-up';
+}
+function togglePlanoEtapa(){
+  var oculto = false;
+  try{ oculto = localStorage.getItem('planoEtapaOculto')==='1'; }catch(e){}
+  try{ localStorage.setItem('planoEtapaOculto', oculto ? '0' : '1'); }catch(e){}
+  _aplicarPlanoColapsado();
 }
 
 async function _cargarLotesCentrosDeEtapaActiva(){
