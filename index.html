@@ -1603,10 +1603,13 @@ function actualizarPlanoEtapa(nombre){
 function _aplicarPlanoColapsado(){
   var oculto = false;
   try{ oculto = localStorage.getItem('planoEtapaOculto')==='1'; }catch(e){}
-  var body = document.getElementById('plano-etapa-body');
-  var chev = document.getElementById('plano-etapa-chevron');
-  if(body) body.style.display = oculto ? 'none' : '';
-  if(chev) chev.className = oculto ? 'ti ti-chevron-down' : 'ti ti-chevron-up';
+  // Mismo estado (mostrar/ocultar) para el plano de la etapa y el del proyecto completo.
+  [['plano-etapa-body','plano-etapa-chevron'],['plano-proy-body','plano-proy-chevron']].forEach(function(ids){
+    var body = document.getElementById(ids[0]);
+    var chev = document.getElementById(ids[1]);
+    if(body) body.style.display = oculto ? 'none' : '';
+    if(chev) chev.className = oculto ? 'ti ti-chevron-down' : 'ti ti-chevron-up';
+  });
 }
 function togglePlanoEtapa(){
   var oculto = false;
@@ -1741,6 +1744,19 @@ function renderConsolidado(){
       <div class="metric"><div class="metric-label">Etapas incluidas</div><div class="metric-value">${consolidadoIngresos.length}</div></div>
     </div>
 
+    <div id="plano-proy-wrap">
+      <div class="section-hdr plano" onclick="togglePlanoEtapa()" title="Mostrar / ocultar plano">
+        <i class="ti ti-map-2" style="font-size:15px;color:#C77A06"></i>
+        <span class="shdr-title plano">Plano de urbanización · Proyecto completo</span>
+        <i id="plano-proy-chevron" class="ti ti-chevron-up" style="font-size:14px;color:#7A4E05"></i>
+        <span class="shdr-badge plano">Plano</span>
+      </div>
+      <div class="plano-etapa-body" id="plano-proy-body">
+        <img src="img/etapas/proyecto-completo.png" alt="Plano de urbanización del proyecto completo" onclick="window.open(this.src,'_blank')" onerror="document.getElementById('plano-proy-wrap').style.display='none'"/>
+        <div class="plano-etapa-nota">Clic en la imagen para verla en tamaño completo.</div>
+      </div>
+    </div>
+
     <div class="section-hdr ing">
       <i class="ti ti-building-estate" style="font-size:15px;color:#185FA5"></i>
       <span class="shdr-title ing">Partida 1 — Ingresos · Todas las etapas</span>
@@ -1770,6 +1786,13 @@ function renderConsolidado(){
 
   renderConsolidadoIngresos();
   renderConsolidadoCostos();
+  _aplicarPlanoColapsado();
+}
+
+let consIngEtapasExpandido = false; // Partida 1 del Flujo de Proyecto: resumida por defecto
+function toggleConsIngEtapas(){
+  consIngEtapasExpandido = !consIngEtapasExpandido;
+  renderConsolidadoIngresos();
 }
 
 function renderConsolidadoIngresos(){
@@ -1781,7 +1804,7 @@ function renderConsolidadoIngresos(){
     return;
   }
   var html='';
-  consolidadoIngresos.forEach(function(e,ei){
+  if(consIngEtapasExpandido) consolidadoIngresos.forEach(function(e,ei){
     var unidTot=e.lotes.reduce(function(a,l){return a+l.unidades;},0);
     var m2Tot=e.lotes.reduce(function(a,l){return a+l.m2*l.unidades;},0);
     html+=`<tr class="partida-row">
@@ -1806,7 +1829,8 @@ function renderConsolidadoIngresos(){
   var promUfM2=m2TotGlobal>0?totIng/m2TotGlobal:0;
   var promUfLote=unidTotGlobal>0?totIng/unidTotGlobal:0;
   html+=`<tr class="total-row">
-    <td>Total ingresos</td>
+    <td><button class="toggle-btn" onclick="toggleConsIngEtapas()" title="${consIngEtapasExpandido?'Ocultar':'Ver'} las etapas">${consIngEtapasExpandido?'−':'+'}</button>
+      Total ingresos <span style="font-weight:400;font-size:11px;color:var(--color-text-tertiary)">· ${consolidadoIngresos.length} etapas${consIngEtapasExpandido?'':' (clic en + para ver el detalle)'}</span></td>
     <td>${unidTotGlobal}</td>
     <td class="muted">${f1(m2TotGlobal)} m²</td>
     <td class="muted">Prom ${f1(promUfM2)} UF/m²</td>
@@ -1836,9 +1860,16 @@ function renderConsolidadoCostos(){
         <td style="text-align:center">${fReal(c.real)}</td>
         <td style="text-align:center">${fVar(c.total,c.real)}</td></tr>`;
       if(c.expandido){
-        c.porEtapa.forEach(function(pe,pei){
+        // Primero la suma del proyecto (todas las etapas) por sub-costo e ítem;
+        // debajo, desplegable, el aporte de cada etapa.
+        html+=_htmlDesgloseAgregado(c,ci);
+        html+=`<tr class="subcentro-row">
+          <td colspan="4" style="padding-left:22px">
+            <button class="sub-toggle" onclick="toggleConsCosEtapas(${ci})">${c.etapasExpandido?'−':'+'}</button>
+            <span style="font-size:11px;color:var(--color-text-secondary)">Desglose por etapa (${c.porEtapa.length} etapa${c.porEtapa.length===1?'':'s'})</span></td></tr>`;
+        if(c.etapasExpandido) c.porEtapa.forEach(function(pe,pei){
           html+=`<tr class="subcentro-row">
-            <td style="padding-left:22px">
+            <td style="padding-left:40px">
               <button class="sub-toggle" onclick="toggleConsCosEtapa(${ci},${pei})">${pe.expandido?'−':'+'}</button>
               <span class="tipo-badge tgen" style="font-size:10px">${pe.etapaNombre}</span></td>
             <td class="neg">${fval(pe.total)}</td>
@@ -2003,6 +2034,71 @@ function renderConsolidadoCostos(){
 function toggleConsCosCentro(ci){
   consolidadoCostos[ci].expandido=!consolidadoCostos[ci].expandido;
   renderConsolidadoCostos();
+}
+function toggleConsCosEtapas(ci){
+  consolidadoCostos[ci].etapasExpandido=!consolidadoCostos[ci].etapasExpandido;
+  renderConsolidadoCostos();
+}
+function toggleConsCosAgg(ci,clave){
+  var c=consolidadoCostos[ci];
+  c.aggExp=c.aggExp||{};
+  c.aggExp[clave]=!c.aggExp[clave];
+  renderConsolidadoCostos();
+}
+
+// Suma, para un centro del Flujo de Proyecto, los sub-costos e ítems de
+// todas las etapas. Se fusionan por nombre normalizado (y unidad, en los
+// ítems): "Superficie Lotes" de las 12 etapas queda en una sola línea con
+// la cantidad total y el monto total (el unitario mostrado es el promedio
+// ponderado = monto / cantidad).
+function _agregarDesgloseCentro(c){
+  var subs={}, ordenSubs=[], items={}, ordenItems=[];
+  var sumarItem=function(mapa, orden, it){
+    var k=_claveCentro(it.nombre)+'|'+(it.und||'');
+    if(!mapa[k]){ mapa[k]={nombre:it.nombre, und:it.und||'', cantidad:0, total:0}; orden.push(k); }
+    mapa[k].cantidad+=Number(it.cantidad)||0;
+    mapa[k].total+=calcItem(it);
+  };
+  c.porEtapa.forEach(function(pe){
+    var ct=pe.centro;
+    if(ct.tieneSubcentros && ct.subcentros && ct.subcentros.length){
+      ct.subcentros.forEach(function(sc){
+        var ks=_claveCentro(sc.nombre);
+        if(!subs[ks]){ subs[ks]={clave:ks, nombre:sc.nombre, total:0, items:{}, orden:[]}; ordenSubs.push(ks); }
+        (sc.items||[]).forEach(function(it){ sumarItem(subs[ks].items, subs[ks].orden, it); });
+      });
+    } else {
+      (ct.items||[]).forEach(function(it){ sumarItem(items, ordenItems, it); });
+    }
+  });
+  var subcentros=ordenSubs.map(function(ks){
+    var s=subs[ks];
+    var its=s.orden.map(function(k){return s.items[k];});
+    return {clave:s.clave, nombre:s.nombre, items:its, total:its.reduce(function(a,it){return a+it.total;},0)};
+  });
+  return {subcentros:subcentros, items:ordenItems.map(function(k){return items[k];})};
+}
+function _htmlItemAgregado(it, pad){
+  var prom=it.cantidad>0?it.total/it.cantidad:0;
+  return `<tr class="subitem-row">
+    <td style="padding-left:${pad}px;color:var(--color-text-tertiary);font-size:11px">
+      ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''}${it.cantidad>0?' × '+f1(prom)+' UF':''})</span></td>
+    <td class="neg">${fval(it.total)}</td><td></td><td></td></tr>`;
+}
+function _htmlDesgloseAgregado(c, ci){
+  var agg=_agregarDesgloseCentro(c);
+  var exp=c.aggExp||{};
+  var html=`<tr class="subitem-row"><td colspan="4" style="padding:6px 0 2px 22px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Total proyecto · suma de las etapas</td></tr>`;
+  agg.subcentros.forEach(function(s){
+    html+=`<tr class="subcentro-row">
+      <td style="padding-left:22px">
+        <button class="sub-toggle" onclick="toggleConsCosAgg(${ci},'${s.clave.replace(/'/g,"\\'")}')">${exp[s.clave]?'−':'+'}</button>
+        ${s.nombre||'(sin nombre)'}</td>
+      <td class="neg">${fval(s.total)}</td><td></td><td></td></tr>`;
+    if(exp[s.clave]) s.items.forEach(function(it){ html+=_htmlItemAgregado(it, 46); });
+  });
+  agg.items.forEach(function(it){ html+=_htmlItemAgregado(it, 22); });
+  return html;
 }
 function toggleConsCosEtapa(ci,pei){
   consolidadoCostos[ci].porEtapa[pei].expandido=!consolidadoCostos[ci].porEtapa[pei].expandido;
