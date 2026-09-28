@@ -1,0 +1,3 @@
+# La web vive en la carpeta "Actual" (Formato Manual es un respaldo local, fuera de git).
+[build]
+  publish = "Actual"

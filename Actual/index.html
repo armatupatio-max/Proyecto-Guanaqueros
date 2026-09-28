@@ -605,6 +605,10 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
     <button class="btn-convert to-clp" id="btn-sens" onclick="abrirModalSensibilidad()" title="Sensibilidad de ingresos y costos por etapa">
       <i class="ti ti-adjustments-horizontal" style="font-size:13px"></i> Sensibilidad
     </button>
+    <button class="btn-convert to-clp" id="btn-imp" onclick="abrirImportarPlanilla()" title="Actualizar las etapas desde la planilla Excel (hojas &quot;Etapa X&quot;)">
+      <i class="ti ti-file-spreadsheet" style="font-size:13px"></i> Importar planilla
+    </button>
+    <input type="file" id="imp-file" accept=".xlsx,.xlsm" style="display:none" onchange="onImportarPlanillaArchivo(this)"/>
   </div>
 </div>
 
@@ -1195,6 +1199,24 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
       <button class="btn-cancel" onclick="cerrarModalGastoProyecto()">Cancelar</button>
       <button class="btn-save" style="background:#5F5E5A" onclick="guardarGastoProyecto()">
         <i class="ti ti-device-floppy" style="font-size:13px;margin-right:4px"></i> Guardar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL IMPORTAR PLANILLA EXCEL -->
+<div class="casa-modal-overlay hidden" id="imp-modal-overlay">
+  <div class="casa-modal-box" style="max-width:860px;width:100%">
+    <div class="cot-modal-hdr">
+      <i class="ti ti-file-spreadsheet" style="font-size:16px;color:#1D7A46"></i>
+      <span class="cot-modal-hdr-title">Importar planilla Excel</span>
+      <button class="modal-close" onclick="cerrarImportarPlanilla()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="cot-modal-body" id="imp-body" style="max-height:62vh;overflow:auto"></div>
+    <div class="cot-modal-footer">
+      <button class="btn-cancel" id="imp-btn-cerrar" onclick="cerrarImportarPlanilla()">Cancelar</button>
+      <button class="btn-save" id="imp-btn-aplicar" style="display:none;background:#1D7A46" onclick="aplicarImportacionPlanilla()">
+        <i class="ti ti-check" style="font-size:13px;margin-right:4px"></i> Aplicar cambios
       </button>
     </div>
   </div>
@@ -2990,6 +3012,304 @@ function _fmtSens(f){
   if(Math.abs(pct)<0.005) return '1 (sin cambio)';
   return txt+' ('+(pct>0?'+':'−')+f1(Math.abs(pct))+'%)';
 }
+/* ═══════════════════════════════════════════════════════════════
+   IMPORTAR PLANILLA EXCEL — cada hoja "Etapa N" de la planilla
+   alimenta la etapa del mismo número:
+   · Partida 1: "Numero de lotes", "Sup. Promedio Lotes",
+     "PRECIO UF / M2 LOTES".
+   · Terreno: filas de "DETALLE SUPERFICIES" (sin "Total"), cada
+     una × "PRECIO UF / M2 TERRENO".
+   · Urbanización: bajo "URBANIZACION", cada bloque con título y
+     encabezado ITEM / UN / CANTIDAD / UNITARIO es un sub-costo; sus
+     ítems se ubican por nombre (los que ya no estén en la planilla se
+     quitan). Sub-costos que la planilla no trae no se tocan.
+   Todo se busca por los textos, no por celdas fijas, y antes de
+   grabar se muestra una vista previa de los cambios.
+   ═══════════════════════════════════════════════════════════════ */
+let _impPlan = null;
+function _impEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch];}); }
+function _impNum(v){
+  if(typeof v==='number') return isFinite(v)?v:0;
+  if(v==null) return 0;
+  var s=String(v).trim().replace(/\s/g,'');
+  if(/,\d+$/.test(s)) s=s.replace(/\./g,'').replace(',','.');
+  var n=parseFloat(s); return isFinite(n)?n:0;
+}
+function _impVacio(cel){ return !cel || cel.v==null || String(cel.v).trim()===''; }
+// Hoja -> grilla [fila][columna] = {v, f} (valores calculados por Excel al guardar)
+function _impGrilla(ws){
+  var g=[];
+  Object.keys(ws).forEach(function(k){
+    if(k.charAt(0)==='!') return;
+    var p=XLSX.utils.decode_cell(k), c=ws[k];
+    (g[p.r]=g[p.r]||[])[p.c]={v:c.v, f:c.f};
+  });
+  return g;
+}
+function _impCel(g,r,c){ return g[r]&&g[r][c]; }
+function _impBuscar(g,texto){
+  var k=_claveCentro(texto);
+  for(var r=0;r<g.length;r++){ var fila=g[r]; if(!fila) continue;
+    for(var c=0;c<fila.length;c++){ var cel=fila[c]; if(cel && typeof cel.v==='string' && _claveCentro(cel.v)===k) return {r:r,c:c}; } }
+  return null;
+}
+// Primer valor a la derecha del rótulo (una fórmula sin valor guardado cuenta como 0)
+function _impValorDerecha(g,r,c){
+  for(var k=c+1;k<=c+4;k++){ var cel=_impCel(g,r,k); if(cel && (cel.f || !_impVacio(cel))) return _impNum(cel.v); }
+  return null;
+}
+function _impParsearEtapa(g){
+  var avisos=[];
+  var rot=function(texto){
+    var p=_impBuscar(g,texto);
+    if(!p){ avisos.push('No se encontró "'+texto+'"'); return null; }
+    var v=_impValorDerecha(g,p.r,p.c);
+    if(v===null){ avisos.push('"'+texto+'" no tiene valor'); return null; }
+    return v;
+  };
+  var res={ unidades:rot('Numero de lotes'), m2:rot('Sup. Promedio Lotes'), ufm2:rot('PRECIO UF / M2 LOTES'),
+            precioTerreno:rot('PRECIO UF / M2 TERRENO'), superficies:[], bloques:[], avisos:avisos };
+  var ds=_impBuscar(g,'DETALLE SUPERFICIES');
+  if(ds){
+    for(var r=ds.r+1;r<ds.r+60;r++){
+      var cel=_impCel(g,r,ds.c);
+      if(_impVacio(cel)){ if(res.superficies.length) break; else continue; }
+      if(_claveCentro(cel.v)==='total') break;
+      var v=_impValorDerecha(g,r,ds.c);
+      res.superficies.push({nombre:String(cel.v).trim(), m2:v||0});
+    }
+  } else avisos.push('No se encontró "DETALLE SUPERFICIES"');
+  var ub=_impBuscar(g,'URBANIZACION');
+  if(ub){
+    var r2=ub.r+1, vacias=0;
+    while(r2<ub.r+400 && vacias<6){
+      var t=_impCel(g,r2,ub.c);
+      if(_impVacio(t)){ vacias++; r2++; continue; }
+      vacias=0;
+      var h=r2+1;
+      if(_claveCentro((_impCel(g,h,ub.c)||{}).v)==='item'){
+        var cols={item:ub.c};
+        for(var c=ub.c+1;c<ub.c+10;c++){
+          var hk=_claveCentro((_impCel(g,h,c)||{}).v);
+          if(['un','und','unid','unidad'].indexOf(hk)>=0) cols.und=c;
+          else if(hk.indexOf('cantidad')===0) cols.cant=c;
+          else if(hk.indexOf('unitario')===0 || hk.indexOf('valor')===0 || hk.indexOf('precio')===0) cols.pu=c;
+        }
+        if(cols.cant==null || cols.pu==null) avisos.push('Bloque "'+String(t.v).trim()+'": no se encontraron las columnas CANTIDAD y UNITARIO');
+        var items=[], rr=h+1;
+        while(rr<h+300){
+          var it=_impCel(g,rr,cols.item);
+          if(_impVacio(it)) break;
+          var und=cols.und!=null ? String((_impCel(g,rr,cols.und)||{}).v||'').trim().toUpperCase() : '';
+          items.push({ nombre:String(it.v).trim(), und:und||null,
+                       cantidad:cols.cant!=null?_impNum((_impCel(g,rr,cols.cant)||{}).v):0,
+                       unitario:cols.pu!=null?_impNum((_impCel(g,rr,cols.pu)||{}).v):0 });
+          rr++;
+        }
+        res.bloques.push({nombre:String(t.v).trim(), items:items});
+        r2=rr; continue;
+      }
+      r2++;
+    }
+    if(!res.bloques.length) avisos.push('Bajo "URBANIZACION" no se encontró ningún bloque con encabezado ITEM');
+  } else avisos.push('No se encontró "URBANIZACION"');
+  return res;
+}
+function _impTituloBonito(s){ s=String(s).trim().toLowerCase(); return s.charAt(0).toUpperCase()+s.slice(1); }
+// Arma lotes y centros nuevos de la etapa a partir de lo que tenía + la planilla
+function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
+  undGlobal=undGlobal||{};
+  var lotes=[{ nombre:(lotesAnt[0]&&lotesAnt[0].nombre)||('Lotes etapa '+numEtapa), unidades:Math.round(P.unidades||0), m2:P.m2||0, ufm2:P.ufm2||0 }];
+  var centros=JSON.parse(JSON.stringify(centrosAnt));
+  var T=centros.find(function(c){return _claveCentro(c.nombre)==='terreno';});
+  if(!T){ T={nombre:'Terreno', cls:'tterr', tieneSubcentros:true, subcentros:[], items:[]}; centros.unshift(T); }
+  T.tieneSubcentros=true;
+  if(!T.subcentros || !T.subcentros.length) T.subcentros=[{nombre:'Desglose Terreno', items:[]}];
+  var sT=T.subcentros[0];
+  sT.items=P.superficies.map(function(s){
+    var prev=(sT.items||[]).find(function(i){return _claveCentro(i.nombre)===_claveCentro(s.nombre);});
+    return {nombre:s.nombre, und:(prev&&prev.und)||'M2', cantidad:s.m2, unitario:P.precioTerreno||0};
+  });
+  if(P.bloques.length){
+    var Uc=centros.find(function(c){return _claveCentro(c.nombre)==='urbanizacion';});
+    if(!Uc){ Uc={nombre:'Urbanización', cls:'turb', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(Uc); }
+    Uc.tieneSubcentros=true; Uc.subcentros=Uc.subcentros||[];
+    P.bloques.forEach(function(b){
+      var sc=Uc.subcentros.find(function(s){return _claveCentro(s.nombre)===_claveCentro(b.nombre);});
+      if(!sc){ sc={nombre:_impTituloBonito(b.nombre), items:[]}; Uc.subcentros.push(sc); }
+      sc.items=b.items.map(function(it){
+        var prev=(sc.items||[]).find(function(i){return _claveCentro(i.nombre)===_claveCentro(it.nombre);});
+        // Unidad: la de la planilla; si esa hoja no tiene columna UN, la que ya tenía el ítem,
+        // o la que el mismo ítem tiene en otra hoja de la planilla.
+        return {nombre:prev?prev.nombre:it.nombre, und:it.und||(prev&&prev.und)||undGlobal[_claveCentro(it.nombre)]||'UN', cantidad:it.cantidad, unitario:it.unitario};
+      });
+    });
+  }
+  return {lotes:lotes, centros:centros};
+}
+function _impFmt(n){ return (Math.round((Number(n)||0)*100)/100).toLocaleString('es-CL'); }
+// Lista de cambios legibles entre lo actual y lo nuevo (lotes, terreno y urbanización)
+function _impDiferencias(lotesAnt, centrosAnt, nuevo){
+  var dif=[];
+  var la=lotesAnt[0]||{}, ln=nuevo.lotes[0];
+  [['unidades','Unidades'],['m2','Sup. promedio (m²)'],['ufm2','UF / m²']].forEach(function(p){
+    if(Math.abs((Number(la[p[0]])||0)-(Number(ln[p[0]])||0))>0.0001) dif.push({grupo:'Partida 1 · Ingresos', txt:p[1]+': '+_impFmt(la[p[0]])+' → '+_impFmt(ln[p[0]])});
+  });
+  if(lotesAnt.length>1) dif.push({grupo:'Partida 1 · Ingresos', txt:'Se reemplazan '+lotesAnt.length+' filas de lotes por una sola'});
+  var comparar=function(grupo, itemsAnt, itemsNue){
+    itemsAnt=itemsAnt||[]; itemsNue=itemsNue||[];
+    itemsNue.forEach(function(n){
+      var a=itemsAnt.find(function(i){return _claveCentro(i.nombre)===_claveCentro(n.nombre);});
+      if(!a){ dif.push({grupo:grupo, txt:'+ '+n.nombre+': '+_impFmt(n.cantidad)+' '+(n.und||'')+' × '+_impFmt(n.unitario)+' UF', tipo:'nuevo'}); return; }
+      var cambios=[];
+      if(Math.abs((Number(a.cantidad)||0)-(Number(n.cantidad)||0))>0.0001) cambios.push('cantidad '+_impFmt(a.cantidad)+' → '+_impFmt(n.cantidad));
+      if(Math.abs((Number(a.unitario)||0)-(Number(n.unitario)||0))>0.0001) cambios.push('unitario '+_impFmt(a.unitario)+' → '+_impFmt(n.unitario)+' UF');
+      if((a.und||'')!==(n.und||'')) cambios.push('unidad '+(a.und||'—')+' → '+(n.und||'—'));
+      if(a.nombre!==n.nombre) cambios.push('nombre "'+a.nombre+'" → "'+n.nombre+'"');
+      if(cambios.length) dif.push({grupo:grupo, txt:n.nombre+': '+cambios.join(' · ')});
+    });
+    itemsAnt.forEach(function(a){
+      if(!itemsNue.some(function(n){return _claveCentro(n.nombre)===_claveCentro(a.nombre);}))
+        dif.push({grupo:grupo, txt:'− '+a.nombre+' (ya no está en la planilla, se quita)', tipo:'quita'});
+    });
+  };
+  var subDe=function(cs,nombreCentro){ var c=cs.find(function(x){return _claveCentro(x.nombre)===nombreCentro;}); return c?(c.subcentros||[]):[]; };
+  var tA=subDe(centrosAnt,'terreno'), tN=subDe(nuevo.centros,'terreno');
+  comparar('Terreno', tA[0]&&tA[0].items, tN[0]&&tN[0].items);
+  var uA=subDe(centrosAnt,'urbanizacion'), uN=subDe(nuevo.centros,'urbanizacion');
+  uN.forEach(function(sn){
+    var sa=uA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
+    var itemsA=sa?sa.items:[];
+    if(!sa) dif.push({grupo:'Urbanización · '+sn.nombre, txt:'Sub-costo nuevo', tipo:'nuevo'});
+    if(JSON.stringify(itemsA)!==JSON.stringify(sn.items)) comparar('Urbanización · '+sn.nombre, itemsA, sn.items);
+  });
+  return dif;
+}
+function _impTotal(lotes, centros){
+  var ing=lotes.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
+  var cen=function(n){ var c=centros.find(function(x){return _claveCentro(x.nombre)===n;}); return c?calcCentro(c):0; };
+  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion')};
+}
+async function _impPlanificar(wb){
+  var hojas={};
+  wb.SheetNames.forEach(function(n){ var m=n.trim().match(/^etapa\s+(\d+)$/i); if(m) hojas[+m[1]]=n; });
+  var ordenadas=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var res=await Promise.all([ sb.from('loteo_lotes').select('*').order('orden'), sb.from('loteo_centros').select('*').order('orden') ]);
+  var lotesPor={}, centrosPor={};
+  (res[0].data||[]).forEach(function(r){ (lotesPor[r.etapa_id]=lotesPor[r.etapa_id]||[]).push(r); });
+  (res[1].data||[]).forEach(function(r){ (centrosPor[r.etapa_id]=centrosPor[r.etapa_id]||[]).push(r); });
+  var plan={etapas:[], avisos:[], cambios:0};
+  var usadas={};
+  // Se leen todas las hojas primero para armar un diccionario de unidades por ítem
+  var parseadas={}, undGlobal={};
+  Object.keys(hojas).forEach(function(n){
+    var P0=_impParsearEtapa(_impGrilla(wb.Sheets[hojas[n]]));
+    parseadas[n]=P0;
+    P0.bloques.forEach(function(b){ b.items.forEach(function(it){ var k=_claveCentro(it.nombre); if(it.und && !undGlobal[k]) undGlobal[k]=it.und; }); });
+  });
+  ordenadas.forEach(function(e){
+    var m=String(e.nombre).match(/(\d+)/), num=m?+m[1]:null, hoja=num!=null?hojas[num]:null;
+    if(!hoja){ plan.avisos.push('"'+e.nombre+'": no hay una hoja "Etapa '+(num==null?'?':num)+'" en la planilla (no se modifica).'); return; }
+    usadas[num]=true;
+    var P=parseadas[num];
+    var lotesAnt=(lotesPor[e.id]||[]).map(_mapLoteRow);
+    var centrosAnt=(centrosPor[e.id]||[]).map(_mapCentroRow).filter(function(c){return c.nombre!=='Gastos de Proyecto';});
+    var nuevo=_impConstruirEtapa(num, lotesAnt, centrosAnt, P, undGlobal);
+    var dif=_impDiferencias(lotesAnt, centrosAnt, nuevo);
+    plan.cambios+=dif.length;
+    plan.etapas.push({etapa:e, hoja:hoja, P:P, nuevo:nuevo, dif:dif, antes:_impTotal(lotesAnt,centrosAnt), despues:_impTotal(nuevo.lotes,nuevo.centros)});
+  });
+  Object.keys(hojas).forEach(function(n){ if(!usadas[n]) plan.avisos.push('La hoja "'+hojas[n]+'" no corresponde a ninguna etapa del flujo (se ignora).'); });
+  return plan;
+}
+function _impHtmlPlan(plan, archivo){
+  var h='<div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:10px">Archivo: <b>'+_impEsc(archivo)+'</b> · '+plan.etapas.length+' etapas leídas · <b>'+plan.cambios+'</b> cambio'+(plan.cambios===1?'':'s')+'</div>';
+  var avisos=plan.avisos.slice();
+  plan.etapas.forEach(function(x){ x.P.avisos.forEach(function(a){ avisos.push(x.hoja+': '+a); }); });
+  if(avisos.length) h+='<div style="margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#FEF3E2;border:0.5px solid #F5C97A;color:#7A4E05;font-size:12px"><b>Avisos</b><br>'+avisos.map(_impEsc).join('<br>')+'</div>';
+  if(plan.cambios===0) h+='<div style="padding:12px;text-align:center;color:var(--color-text-tertiary)">El flujo ya está igual a la planilla. No hay nada que actualizar.</div>';
+  plan.etapas.forEach(function(x){
+    var dT=function(k){ var d=x.despues[k]-x.antes[k]; return Math.abs(d)<0.05?'':' <span style="color:'+(d>0?'#A32D2D':'#0F6E56')+'">('+(d>0?'+':'−')+f1(Math.abs(d))+')</span>'; };
+    var res='Ingresos '+f1(x.despues.ing)+' UF · Terreno '+f1(x.despues.terreno)+' UF'+dT('terreno')+' · Urbanización '+f1(x.despues.urb)+' UF'+dT('urb');
+    h+='<details style="border:0.5px solid var(--color-border-tertiary);border-radius:8px;margin-bottom:6px;padding:6px 10px"'+(x.dif.length&&plan.etapas.length<=3?' open':'')+'>';
+    h+='<summary style="cursor:pointer;font-size:12px"><b>'+_impEsc(x.etapa.nombre)+'</b> <span style="color:var(--color-text-tertiary)">('+_impEsc(x.hoja)+')</span> — '+(x.dif.length?'<b>'+x.dif.length+'</b> cambio'+(x.dif.length===1?'':'s'):'<span style="color:var(--color-text-tertiary)">sin cambios</span>')+'<br><span style="font-size:11px;color:var(--color-text-secondary)">'+res+'</span></summary>';
+    if(x.dif.length){
+      var grupos={}; x.dif.forEach(function(d){ (grupos[d.grupo]=grupos[d.grupo]||[]).push(d); });
+      Object.keys(grupos).forEach(function(gname){
+        h+='<div style="margin:6px 0 2px;font-size:11px;font-weight:600;color:var(--color-text-secondary)">'+_impEsc(gname)+'</div>';
+        grupos[gname].forEach(function(d){
+          var col=d.tipo==='nuevo'?'#0F6E56':(d.tipo==='quita'?'#A32D2D':'inherit');
+          h+='<div style="font-size:11px;padding-left:10px;color:'+col+'">'+_impEsc(d.txt)+'</div>';
+        });
+      });
+    }
+    h+='</details>';
+  });
+  return h;
+}
+function _impModal(html, puedeAplicar){
+  document.getElementById('imp-body').innerHTML=html;
+  document.getElementById('imp-btn-aplicar').style.display=puedeAplicar?'':'none';
+  document.getElementById('imp-btn-aplicar').disabled=false;
+  document.getElementById('imp-btn-cerrar').textContent=puedeAplicar?'Cancelar':'Cerrar';
+  document.getElementById('imp-modal-overlay').classList.remove('hidden');
+}
+function abrirImportarPlanilla(){
+  var inp=document.getElementById('imp-file'); inp.value=''; inp.click();
+}
+function cerrarImportarPlanilla(){
+  document.getElementById('imp-modal-overlay').classList.add('hidden');
+  _impPlan=null;
+}
+async function onImportarPlanillaArchivo(input){
+  var f=input.files&&input.files[0]; if(!f) return;
+  if(!window.XLSX){ alert('No se pudo cargar el lector de Excel. Recarga la página e inténtalo de nuevo.'); return; }
+  _impModal('<div style="padding:16px;text-align:center;color:var(--color-text-tertiary)">Leyendo planilla…</div>', false);
+  try{
+    await _guardarSiHayCambios(); // lo editado a mano en la web queda guardado antes de comparar
+    var wb=XLSX.read(await f.arrayBuffer(), {type:'array'});
+    _impPlan=await _impPlanificar(wb);
+    _impModal(_impHtmlPlan(_impPlan, f.name), _impPlan.cambios>0);
+  }catch(e){
+    console.error('Error importando planilla', e);
+    _impModal('<div style="color:#A32D2D">No se pudo leer la planilla: '+_impEsc(e.message)+'</div>', false);
+  }
+}
+async function aplicarImportacionPlanilla(){
+  if(!_impPlan) return;
+  var btn=document.getElementById('imp-btn-aplicar'); btn.disabled=true;
+  var conCambios=_impPlan.etapas.filter(function(x){return x.dif.length;});
+  document.getElementById('imp-body').insertAdjacentHTML('afterbegin','<div id="imp-progreso" style="margin-bottom:10px;padding:8px 12px;border-radius:8px;background:#E6F1FB;color:#0C447C;font-size:12px">Actualizando '+conCambios.length+' etapa'+(conCambios.length===1?'':'s')+'…</div>');
+  try{
+    await Promise.all(conCambios.map(async function(x){
+      var id=x.etapa.id;
+      await Promise.all([
+        (async function(){
+          var d=await sb.from('loteo_lotes').delete().eq('etapa_id', id); if(d.error) throw d.error;
+          var i=await sb.from('loteo_lotes').insert(x.nuevo.lotes.map(function(l,k){ return {nombre:l.nombre, unidades:l.unidades, m2:l.m2, ufm2:l.ufm2, orden:k, etapa_id:id}; })); if(i.error) throw i.error;
+        })(),
+        (async function(){
+          // La fila "Gastos de Proyecto" (prorrateo) se conserva; se reescriben los demás centros
+          var d=await sb.from('loteo_centros').delete().eq('etapa_id', id).neq('nombre','Gastos de Proyecto'); if(d.error) throw d.error;
+          var i=await sb.from('loteo_centros').insert(x.nuevo.centros.map(function(c,k){ return {nombre:c.nombre, cls:c.cls, tiene_subcentros:!!c.tieneSubcentros, subcentros:c.subcentros||[], items:c.items||[], orden:k, etapa_id:id}; })); if(i.error) throw i.error;
+        })()
+      ]);
+    }));
+    await refrescarGastosDeProyecto(); // la superficie de lotes pudo cambiar -> prorrateo por m²
+    if(vistaConsolidado) await mostrarConsolidado(); else await _cargarLotesCentrosDeEtapaActiva();
+    var p=document.getElementById('imp-progreso');
+    if(p){ p.style.background='#EAF3DE'; p.style.color='#27500A'; p.textContent='Listo: se actualizaron '+conCambios.length+' etapa'+(conCambios.length===1?'':'s')+' desde la planilla.'; }
+    btn.style.display='none';
+    document.getElementById('imp-btn-cerrar').textContent='Cerrar';
+    _impPlan=null;
+  }catch(e){
+    console.error('Error aplicando la planilla', e);
+    var p2=document.getElementById('imp-progreso');
+    if(p2){ p2.style.background='#FCEBEB'; p2.style.color='#791F1F'; p2.textContent='Error al actualizar: '+(e.message||e)+'. Revisa las etapas; puedes volver a importar.'; }
+    btn.disabled=false;
+  }
+}
+
 function abrirModalSensibilidad(){
   renderSensLista();
   cerrarFormSensibilidad();
