@@ -3047,10 +3047,11 @@ function _impGrilla(ws){
   return g;
 }
 function _impCel(g,r,c){ return g[r]&&g[r][c]; }
-function _impBuscar(g,texto){
+function _impBuscar(g,texto,prefijo){
   var k=_claveCentro(texto);
   for(var r=0;r<g.length;r++){ var fila=g[r]; if(!fila) continue;
-    for(var c=0;c<fila.length;c++){ var cel=fila[c]; if(cel && typeof cel.v==='string' && _claveCentro(cel.v)===k) return {r:r,c:c}; } }
+    for(var c=0;c<fila.length;c++){ var cel=fila[c]; if(!cel || typeof cel.v!=='string') continue;
+      var t=_claveCentro(cel.v); if(t===k || (prefijo && t.indexOf(k)===0)) return {r:r,c:c}; } }
   return null;
 }
 // Primer valor a la derecha del rótulo (una fórmula sin valor guardado cuenta como 0)
@@ -3068,7 +3069,11 @@ function _impParsearEtapa(g){
     return v;
   };
   var res={ unidades:rot('Numero de lotes'), m2:rot('Sup. Promedio Lotes'), ufm2:rot('PRECIO UF / M2 LOTES'),
-            precioTerreno:rot('PRECIO UF / M2 TERRENO'), superficies:[], bloques:[], avisos:avisos };
+            precioTerreno:rot('PRECIO UF / M2 TERRENO'), comision:null, superficies:[], bloques:[], avisos:avisos };
+  // "COMISION VENTAS" (o "COMISION VENTAS 2.5%"): monto total de la comisión de la etapa en UF
+  var pc=_impBuscar(g,'COMISION VENTAS',true);
+  if(pc){ res.comision=_impValorDerecha(g,pc.r,pc.c); if(res.comision===null) avisos.push('"COMISION VENTAS" no tiene valor'); }
+  else avisos.push('No se encontró "COMISION VENTAS"');
   var ds=_impBuscar(g,'DETALLE SUPERFICIES');
   if(ds){
     for(var r=ds.r+1;r<ds.r+60;r++){
@@ -3130,6 +3135,20 @@ function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
     var prev=(sT.items||[]).find(function(i){return _claveCentro(i.nombre)===_claveCentro(s.nombre);});
     return {nombre:s.nombre, und:(prev&&prev.und)||'M2', cantidad:s.m2, unitario:P.precioTerreno||0};
   });
+  // Ventas: comisión = monto de "COMISION VENTAS", repartido por el número de lotes
+  if(P.comision!=null){
+    var Vc=centros.find(function(c){return _claveCentro(c.nombre)==='ventas';});
+    if(!Vc){ Vc={nombre:'Ventas', cls:'tven', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(Vc); }
+    Vc.tieneSubcentros=true;
+    if(!Vc.subcentros || !Vc.subcentros.length) Vc.subcentros=[{nombre:'Comercialización', items:[]}];
+    var sV=Vc.subcentros[0];
+    var unid=Math.round(P.unidades||0), venta=unid*(P.m2||0)*(P.ufm2||0);
+    var pctTxt=venta>0 ? (Math.round(P.comision/venta*1000)/10).toLocaleString('es-CL')+'%' : '';
+    var itCom={nombre:'Comisión ventas'+(pctTxt?' '+pctTxt:''), und:'UN', cantidad:unid, unitario:unid>0?P.comision/unid:P.comision};
+    var iCom=(sV.items||[]).findIndex(function(i){return _claveCentro(i.nombre).indexOf('comision')>=0;});
+    sV.items=sV.items||[];
+    if(iCom>=0) sV.items[iCom]=itCom; else sV.items.push(itCom);
+  }
   if(P.bloques.length){
     var Uc=centros.find(function(c){return _claveCentro(c.nombre)==='urbanizacion';});
     if(!Uc){ Uc={nombre:'Urbanización', cls:'turb', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(Uc); }
@@ -3176,6 +3195,17 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
   var subDe=function(cs,nombreCentro){ var c=cs.find(function(x){return _claveCentro(x.nombre)===nombreCentro;}); return c?(c.subcentros||[]):[]; };
   var tA=subDe(centrosAnt,'terreno'), tN=subDe(nuevo.centros,'terreno');
   comparar('Terreno', tA[0]&&tA[0].items, tN[0]&&tN[0].items);
+  var vA=subDe(centrosAnt,'ventas'), vN=subDe(nuevo.centros,'ventas');
+  if(vN[0] && JSON.stringify((vA[0]||{}).items||[])!==JSON.stringify(vN[0].items)){
+    // la comisión se compara como un solo ítem aunque cambie su nombre (por el %)
+    var cA=((vA[0]||{}).items||[]).find(function(i){return _claveCentro(i.nombre).indexOf('comision')>=0;});
+    var cN=vN[0].items.find(function(i){return _claveCentro(i.nombre).indexOf('comision')>=0;});
+    if(cN){
+      var tAnt=cA?(Number(cA.cantidad)||0)*(Number(cA.unitario)||0):0, tNue=(Number(cN.cantidad)||0)*(Number(cN.unitario)||0);
+      if(!cA || Math.abs(tAnt-tNue)>0.0001 || cA.nombre!==cN.nombre)
+        dif.push({grupo:'Ventas', txt:cN.nombre+': '+(cA?_impFmt(tAnt)+' → ':'')+_impFmt(tNue)+' UF ('+_impFmt(cN.cantidad)+' lotes × '+_impFmt(cN.unitario)+' UF)', tipo:cA?null:'nuevo'});
+    }
+  }
   var uA=subDe(centrosAnt,'urbanizacion'), uN=subDe(nuevo.centros,'urbanizacion');
   uN.forEach(function(sn){
     var sa=uA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
@@ -3188,7 +3218,7 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
 function _impTotal(lotes, centros){
   var ing=lotes.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
   var cen=function(n){ var c=centros.find(function(x){return _claveCentro(x.nombre)===n;}); return c?calcCentro(c):0; };
-  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion')};
+  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion'), ventas:cen('ventas')};
 }
 async function _impPlanificar(wb){
   var hojas={};
@@ -3230,7 +3260,7 @@ function _impHtmlPlan(plan, archivo){
   if(plan.cambios===0) h+='<div style="padding:12px;text-align:center;color:var(--color-text-tertiary)">El flujo ya está igual a la planilla. No hay nada que actualizar.</div>';
   plan.etapas.forEach(function(x){
     var dT=function(k){ var d=x.despues[k]-x.antes[k]; return Math.abs(d)<0.05?'':' <span style="color:'+(d>0?'#A32D2D':'#0F6E56')+'">('+(d>0?'+':'−')+f1(Math.abs(d))+')</span>'; };
-    var res='Ingresos '+f1(x.despues.ing)+' UF · Terreno '+f1(x.despues.terreno)+' UF'+dT('terreno')+' · Urbanización '+f1(x.despues.urb)+' UF'+dT('urb');
+    var res='Ingresos '+f1(x.despues.ing)+' UF · Terreno '+f1(x.despues.terreno)+' UF'+dT('terreno')+' · Urbanización '+f1(x.despues.urb)+' UF'+dT('urb')+' · Ventas '+f1(x.despues.ventas)+' UF'+dT('ventas');
     h+='<details style="border:0.5px solid var(--color-border-tertiary);border-radius:8px;margin-bottom:6px;padding:6px 10px"'+(x.dif.length&&plan.etapas.length<=3?' open':'')+'>';
     h+='<summary style="cursor:pointer;font-size:12px"><b>'+_impEsc(x.etapa.nombre)+'</b> <span style="color:var(--color-text-tertiary)">('+_impEsc(x.hoja)+')</span> — '+(x.dif.length?'<b>'+x.dif.length+'</b> cambio'+(x.dif.length===1?'':'s'):'<span style="color:var(--color-text-tertiary)">sin cambios</span>')+'<br><span style="font-size:11px;color:var(--color-text-secondary)">'+res+'</span></summary>';
     if(x.dif.length){
