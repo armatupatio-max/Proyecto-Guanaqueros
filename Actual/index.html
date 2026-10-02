@@ -3069,7 +3069,25 @@ function _impParsearEtapa(g){
     return v;
   };
   var res={ unidades:rot('Numero de lotes'), m2:rot('Sup. Promedio Lotes'), ufm2:rot('PRECIO UF / M2 LOTES'),
-            precioTerreno:rot('PRECIO UF / M2 TERRENO'), comision:null, superficies:[], bloques:[], avisos:avisos };
+            precioTerreno:rot('PRECIO UF / M2 TERRENO'), comision:null, ivaVenta:null, superficies:[], bloques:[], avisos:avisos };
+  // Bloque "IVA VENTA" (opcional): encabezado ITEM | UN | CANTIDAD | UNITARIO y una fila por concepto
+  // (IVA débito y créditos fiscales con signo negativo). Se carga como centro de costo "Iva Venta".
+  var pv=_impBuscar(g,'IVA VENTA');
+  if(pv && _claveCentro((_impCel(g,pv.r+1,pv.c)||{}).v)==='item'){
+    var hv=pv.r+1, cv={item:pv.c};
+    for(var cc=pv.c+1;cc<pv.c+10;cc++){
+      var hk2=_claveCentro((_impCel(g,hv,cc)||{}).v);
+      if(['un','und','unid','unidad'].indexOf(hk2)>=0) cv.und=cc;
+      else if(hk2.indexOf('cantidad')===0) cv.cant=cc;
+      else if(hk2.indexOf('unitario')===0 || hk2.indexOf('valor')===0 || hk2.indexOf('precio')===0) cv.pu=cc;
+    }
+    res.ivaVenta=[];
+    for(var rv=hv+1;rv<hv+30;rv++){
+      var iv=_impCel(g,rv,cv.item); if(_impVacio(iv)) break;
+      res.ivaVenta.push({ nombre:String(iv.v).trim(), und:cv.und!=null?String((_impCel(g,rv,cv.und)||{}).v||'UN').trim().toUpperCase():'UN',
+                          cantidad:cv.cant!=null?_impNum((_impCel(g,rv,cv.cant)||{}).v):1, unitario:cv.pu!=null?_impNum((_impCel(g,rv,cv.pu)||{}).v):0 });
+    }
+  }
   // "COMISION VENTAS" (o "COMISION VENTAS 2.5%"): monto total de la comisión de la etapa en UF
   var pc=_impBuscar(g,'COMISION VENTAS',true);
   if(pc){ res.comision=_impValorDerecha(g,pc.r,pc.c); if(res.comision===null) avisos.push('"COMISION VENTAS" no tiene valor'); }
@@ -3149,6 +3167,14 @@ function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
     sV.items=sV.items||[];
     if(iCom>=0) sV.items[iCom]=itCom; else sV.items.push(itCom);
   }
+  // Iva Venta: IVA débito de la venta de sitios menos los créditos fiscales (DL 825 art. 2 N°1 y art. 17)
+  if(P.ivaVenta && P.ivaVenta.length){
+    var Ic=centros.find(function(c){return _claveCentro(c.nombre)==='iva venta';});
+    if(!Ic){ Ic={nombre:'Iva Venta', cls:'tfin', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(Ic); }
+    Ic.tieneSubcentros=true;
+    if(!Ic.subcentros || !Ic.subcentros.length) Ic.subcentros=[{nombre:'Cálculo IVA (débito − crédito fiscal)', items:[]}];
+    Ic.subcentros[0].items=P.ivaVenta.map(function(it){ return {nombre:it.nombre, und:it.und||'UN', cantidad:it.cantidad, unitario:it.unitario}; });
+  }
   if(P.bloques.length){
     var Uc=centros.find(function(c){return _claveCentro(c.nombre)==='urbanizacion';});
     if(!Uc){ Uc={nombre:'Urbanización', cls:'turb', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(Uc); }
@@ -3206,6 +3232,8 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
         dif.push({grupo:'Ventas', txt:cN.nombre+': '+(cA?_impFmt(tAnt)+' → ':'')+_impFmt(tNue)+' UF ('+_impFmt(cN.cantidad)+' lotes × '+_impFmt(cN.unitario)+' UF)', tipo:cA?null:'nuevo'});
     }
   }
+  var iA=subDe(centrosAnt,'iva venta'), iN=subDe(nuevo.centros,'iva venta');
+  if(iN[0]){ if(!iA[0]) dif.push({grupo:'Iva Venta', txt:'Centro de costo nuevo', tipo:'nuevo'}); comparar('Iva Venta', iA[0]&&iA[0].items, iN[0].items); }
   var uA=subDe(centrosAnt,'urbanizacion'), uN=subDe(nuevo.centros,'urbanizacion');
   uN.forEach(function(sn){
     var sa=uA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
@@ -3218,7 +3246,7 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
 function _impTotal(lotes, centros){
   var ing=lotes.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
   var cen=function(n){ var c=centros.find(function(x){return _claveCentro(x.nombre)===n;}); return c?calcCentro(c):0; };
-  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion'), ventas:cen('ventas')};
+  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion'), ventas:cen('ventas'), iva:cen('iva venta')};
 }
 async function _impPlanificar(wb){
   var hojas={};
@@ -3260,7 +3288,7 @@ function _impHtmlPlan(plan, archivo){
   if(plan.cambios===0) h+='<div style="padding:12px;text-align:center;color:var(--color-text-tertiary)">El flujo ya está igual a la planilla. No hay nada que actualizar.</div>';
   plan.etapas.forEach(function(x){
     var dT=function(k){ var d=x.despues[k]-x.antes[k]; return Math.abs(d)<0.05?'':' <span style="color:'+(d>0?'#A32D2D':'#0F6E56')+'">('+(d>0?'+':'−')+f1(Math.abs(d))+')</span>'; };
-    var res='Ingresos '+f1(x.despues.ing)+' UF · Terreno '+f1(x.despues.terreno)+' UF'+dT('terreno')+' · Urbanización '+f1(x.despues.urb)+' UF'+dT('urb')+' · Ventas '+f1(x.despues.ventas)+' UF'+dT('ventas');
+    var res='Ingresos '+f1(x.despues.ing)+' UF · Terreno '+f1(x.despues.terreno)+' UF'+dT('terreno')+' · Urbanización '+f1(x.despues.urb)+' UF'+dT('urb')+' · Ventas '+f1(x.despues.ventas)+' UF'+dT('ventas')+(x.despues.iva||x.antes.iva?' · IVA '+f1(x.despues.iva)+' UF'+dT('iva'):'');
     h+='<details style="border:0.5px solid var(--color-border-tertiary);border-radius:8px;margin-bottom:6px;padding:6px 10px"'+(x.dif.length&&plan.etapas.length<=3?' open':'')+'>';
     h+='<summary style="cursor:pointer;font-size:12px"><b>'+_impEsc(x.etapa.nombre)+'</b> <span style="color:var(--color-text-tertiary)">('+_impEsc(x.hoja)+')</span> — '+(x.dif.length?'<b>'+x.dif.length+'</b> cambio'+(x.dif.length===1?'':'s'):'<span style="color:var(--color-text-tertiary)">sin cambios</span>')+'<br><span style="font-size:11px;color:var(--color-text-secondary)">'+res+'</span></summary>';
     if(x.dif.length){
