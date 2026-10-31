@@ -1984,7 +1984,7 @@ function renderConsolidadoCostos(){
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 0">
                 <button class="sub-toggle" onclick="toggleSubcentroGasto(${gi},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
                 <input class="ci ni" value="${sc.nombre}" style="width:100px;font-size:12px" data-minw="100" oninput="autoGrowNI(this)"
-                  onchange="gastosProyecto[${gi}].subcentros[${si}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                  onchange="renombrarSubcentroGastoProyecto(${gi},${si},this.value)"/>
                 <span class="neg" style="margin-left:auto;font-size:12px">${fval(scTot)}</span>
                 <button class="sub-del-btn" onclick="delSubcentroGasto(${gi},${si})" title="Eliminar sub-costo"><i class="ti ti-trash" style="font-size:11px"></i></button>
               </div></td></tr>`;
@@ -1995,7 +1995,7 @@ function renderConsolidadoCostos(){
                   <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
                     <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
                     <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
-                      onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                      onchange="renombrarItemGastoProyecto(${gi},${si},${ii},this.value)"/>
                     <select class="ci" style="width:44px;padding:0 2px;font-size:11px" onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].und=this.value;guardarGastoProyectoCampos(${gi})">${undOptsHTML(it.und)}</select>
                     <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:60px"
                       onchange="gastosProyecto[${gi}].subcentros[${si}].items[${ii}].cantidad=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
@@ -2021,7 +2021,7 @@ function renderConsolidadoCostos(){
               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
                 <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
                 <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
-                  onchange="gastosProyecto[${gi}].items[${ii}].nombre=this.value;guardarGastoProyectoCampos(${gi})"/>
+                  onchange="renombrarItemGastoProyecto(${gi},null,${ii},this.value)"/>
                 <select class="ci" style="width:44px;padding:0 2px;font-size:11px" onchange="gastosProyecto[${gi}].items[${ii}].und=this.value;guardarGastoProyectoCampos(${gi})">${undOptsHTML(it.und)}</select>
                 <input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:60px"
                   onchange="gastosProyecto[${gi}].items[${ii}].cantidad=+this.value||0;guardarGastoProyectoCampos(${gi})"/>
@@ -2450,8 +2450,40 @@ async function guardarGastoProyectoCampos(gi){
   await recalcularGastosDeProyecto();
   renderConsolidadoCostos();
 }
-function editarNombreGastoProyecto(gi, valor){
+// Los pagos (loteo_registros_gastos) se asocian a un gasto de proyecto por NOMBRE
+// (centro / subcentro / desglose). Al renombrar, se actualizan también los pagos ya
+// registrados para que sigan sumando en el avance.
+async function _renombrarEnPagosProyecto(cambios){
+  for(const c of cambios){
+    if(!c.viejo || c.viejo===c.nuevo) continue;
+    var q=sb.from('loteo_registros_gastos').update({[c.campo]:c.nuevo}).is('etapa_id',null).eq(c.campo,c.viejo);
+    if(c.centro!=null && c.campo!=='centro') q=q.eq('centro',c.centro);
+    if(c.subcentro!=null && c.campo==='desglose') q=q.eq('subcentro',c.subcentro);
+    var r=await q; if(r.error) console.error('No se pudieron renombrar los pagos', r.error);
+  }
+  if(typeof cargarRegsGlobalDesdeNube==='function') await cargarRegsGlobalDesdeNube();
+}
+async function editarNombreGastoProyecto(gi, valor){
+  var viejo=gastosProyecto[gi].nombre;
   gastosProyecto[gi].nombre=valor;
+  await _renombrarEnPagosProyecto([{campo:'centro', viejo:viejo, nuevo:valor}]);
+  guardarGastoProyectoCampos(gi);
+}
+async function renombrarSubcentroGastoProyecto(gi, si, valor){
+  var g=gastosProyecto[gi], viejo=g.subcentros[si].nombre;
+  g.subcentros[si].nombre=valor;
+  await _renombrarEnPagosProyecto([{campo:'subcentro', viejo:viejo, nuevo:valor, centro:g.nombre}]);
+  guardarGastoProyectoCampos(gi);
+}
+async function renombrarItemGastoProyecto(gi, si, ii, valor){
+  var g=gastosProyecto[gi];
+  if(si===null){
+    var viejoP=g.items[ii].nombre; g.items[ii].nombre=valor;
+    await _renombrarEnPagosProyecto([{campo:'desglose', viejo:viejoP, nuevo:valor, centro:g.nombre},{campo:'subcentro', viejo:viejoP, nuevo:valor, centro:g.nombre}]);
+  } else {
+    var sc=g.subcentros[si], viejo=sc.items[ii].nombre; sc.items[ii].nombre=valor;
+    await _renombrarEnPagosProyecto([{campo:'desglose', viejo:viejo, nuevo:valor, centro:g.nombre, subcentro:sc.nombre}]);
+  }
   guardarGastoProyectoCampos(gi);
 }
 function addSubcentroGasto(gi){
@@ -2662,8 +2694,15 @@ async function cargarRegsGlobalDesdeNube(){
   var res = await sb.from('loteo_registros_gastos').select('*').order('fecha',{ascending:false});
   regsGlobal = (res.data||[]).map(_mapRegistroRow);
 }
+// Supabase Storage rechaza rutas con "%", "#", "?", tildes, etc. (falla con "Failed to fetch"):
+// para la ruta se usa una versión segura del nombre; el nombre original se sigue mostrando tal cual.
+function _nombreSeguroStorage(nombre){
+  var s=String(nombre||'archivo').normalize('NFD').replace(/[̀-ͯ]/g,'');
+  s=s.replace(/[^A-Za-z0-9._-]+/g,'_').replace(/_+/g,'_').replace(/^[_.]+|_+$/g,'');
+  return s||'archivo';
+}
 async function subirAdjuntoStorage(file, regId, etapaId){
-  var path = 'gastos/'+(etapaId||'proyecto')+'/'+regId+'/'+Date.now()+'_'+file.name;
+  var path = 'gastos/'+(etapaId||'proyecto')+'/'+regId+'/'+Date.now()+'_'+_nombreSeguroStorage(file.name);
   var up = await sb.storage.from('loteo-documentos').upload(path, file);
   if(up.error) throw up.error;
   return path;
@@ -3023,6 +3062,15 @@ function _fmtSens(f){
      encabezado ITEM / UN / CANTIDAD / UNITARIO es un sub-costo; sus
      ítems se ubican por nombre (los que ya no estén en la planilla se
      quitan). Sub-costos que la planilla no trae no se tocan.
+   · Otros centros: bloque "OTROS COSTOS" (CENTRO / SUBCOSTO / ITEM /
+     UN / CANTIDAD / UNITARIO). Cada centro listado se reemplaza
+     completo por lo que trae la planilla.
+   · Gastos de proyecto: hoja "Variables", bloque "GASTOS DE PROYECTO"
+     (CENTRO / SUBCOSTO / ITEM / UN / CANTIDAD / UNITARIO). Se
+     actualizan o crean por nombre; los que solo están en la web se
+     informan y no se borran.
+   Los nombres de sub-costos e ítems se toman tal como vienen en la
+   planilla (cambiar un nombre en el Excel lo cambia en la web).
    Todo se busca por los textos, no por celdas fijas, y antes de
    grabar se muestra una vista previa de los cambios.
    ═══════════════════════════════════════════════════════════════ */
@@ -3069,7 +3117,10 @@ function _impParsearEtapa(g){
     return v;
   };
   var res={ unidades:rot('Numero de lotes'), m2:rot('Sup. Promedio Lotes'), ufm2:rot('PRECIO UF / M2 LOTES'),
-            precioTerreno:rot('PRECIO UF / M2 TERRENO'), comision:null, ivaVenta:null, superficies:[], bloques:[], avisos:avisos };
+            precioTerreno:rot('PRECIO UF / M2 TERRENO'), comision:null, ivaVenta:null, superficies:[], bloques:[], otros:null, avisos:avisos };
+  // Bloque "OTROS COSTOS" (opcional): una fila por ítem con su centro y sub-costo
+  var po=_impBuscar(g,'OTROS COSTOS');
+  if(po){ var to=_impTablaCentros(g, po.r+1, po.c); if(to) res.otros=to; else avisos.push('"OTROS COSTOS": falta el encabezado CENTRO / SUBCOSTO / ITEM / UN / CANTIDAD / UNITARIO'); }
   // Bloque "IVA VENTA" (opcional): encabezado ITEM | UN | CANTIDAD | UNITARIO y una fila por concepto
   // (IVA débito y créditos fiscales con signo negativo). Se carga como centro de costo "Iva Venta".
   var pv=_impBuscar(g,'IVA VENTA');
@@ -3138,7 +3189,45 @@ function _impParsearEtapa(g){
   } else avisos.push('No se encontró "URBANIZACION"');
   return res;
 }
-function _impTituloBonito(s){ s=String(s).trim().toLowerCase(); return s.charAt(0).toUpperCase()+s.slice(1); }
+// Tabla con encabezado CENTRO | SUBCOSTO | ITEM | UN | CANTIDAD | UNITARIO en la fila rh (desde la columna c0)
+function _impTablaCentros(g, rh, c0){
+  var cols={};
+  for(var c=c0;c<c0+12;c++){
+    var k=_claveCentro((_impCel(g,rh,c)||{}).v);
+    if(k==='centro') cols.centro=c;
+    else if(k.indexOf('subcosto')===0 || k.indexOf('sub-costo')===0 || k.indexOf('proveedor')===0) cols.sub=c;
+    else if(k==='item' || k==='ítem') cols.item=c;
+    else if(['un','und','unid','unidad'].indexOf(k)>=0) cols.und=c;
+    else if(k.indexOf('cantidad')===0) cols.cant=c;
+    else if(k.indexOf('unitario')===0 || k.indexOf('p. unit')===0 || k.indexOf('precio')===0) cols.pu=c;
+  }
+  if(cols.centro==null || cols.item==null || cols.cant==null || cols.pu==null) return null;
+  var filas=[];
+  for(var r=rh+1;r<rh+400;r++){
+    var ce=_impCel(g,r,cols.centro), it=_impCel(g,r,cols.item);
+    if(_impVacio(ce) && _impVacio(it)) break;
+    if(_impVacio(it) || _claveCentro(ce&&ce.v).indexOf('total')===0) continue;
+    filas.push({ centro:String(ce.v).trim(), sub:cols.sub!=null?String((_impCel(g,r,cols.sub)||{}).v||'').trim():'',
+                 nombre:String(it.v).trim(), und:cols.und!=null?(String((_impCel(g,r,cols.und)||{}).v||'').trim().toUpperCase()||'UN'):'UN',
+                 cantidad:_impNum((_impCel(g,r,cols.cant)||{}).v), unitario:_impNum((_impCel(g,r,cols.pu)||{}).v) });
+  }
+  return filas;
+}
+// Agrupa filas de _impTablaCentros en {centro: [{nombre:sub, items:[...]}]} respetando el orden
+function _impAgruparCentros(filas){
+  var orden=[], mapa={};
+  filas.forEach(function(f){
+    var kc=_claveCentro(f.centro);
+    if(!mapa[kc]){ mapa[kc]={nombre:f.centro, subcentros:[]}; orden.push(kc); }
+    var C=mapa[kc], sc=C.subcentros.find(function(s){return _claveCentro(s.nombre)===_claveCentro(f.sub);});
+    if(!sc){ sc={nombre:f.sub, items:[]}; C.subcentros.push(sc); }
+    sc.items.push({nombre:f.nombre, und:f.und, cantidad:f.cantidad, unitario:f.unitario});
+  });
+  return orden.map(function(k){return mapa[k];});
+}
+var _IMP_CLS={'areas verdes':'tproy','derechos':'tder','administracion':'tadm','costo financiero':'tfin','imprevistos':'timp','gastos comunes':'tgc'};
+// Títulos en MAYÚSCULAS se pasan a tipo oración; si ya vienen escritos con minúsculas se respetan
+function _impTituloBonito(s){ s=String(s).trim(); if(s!==s.toUpperCase()) return s; s=s.toLowerCase(); return s.charAt(0).toUpperCase()+s.slice(1); }
 // Arma lotes y centros nuevos de la etapa a partir de lo que tenía + la planilla
 function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
   undGlobal=undGlobal||{};
@@ -3182,15 +3271,26 @@ function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
     P.bloques.forEach(function(b){
       var sc=Uc.subcentros.find(function(s){return _claveCentro(s.nombre)===_claveCentro(b.nombre);});
       if(!sc){ sc={nombre:_impTituloBonito(b.nombre), items:[]}; Uc.subcentros.push(sc); }
+      else sc.nombre=_impTituloBonito(b.nombre); // el nombre manda la planilla
       sc.items=b.items.map(function(it){
         var prev=(sc.items||[]).find(function(i){return _claveCentro(i.nombre)===_claveCentro(it.nombre);});
         // Unidad: la de la planilla; si esa hoja no tiene columna UN, la que ya tenía el ítem,
         // o la que el mismo ítem tiene en otra hoja de la planilla.
-        return {nombre:prev?prev.nombre:it.nombre, und:it.und||(prev&&prev.und)||undGlobal[_claveCentro(it.nombre)]||'UN', cantidad:it.cantidad, unitario:it.unitario};
+        return {nombre:it.nombre, und:it.und||(prev&&prev.und)||undGlobal[_claveCentro(it.nombre)]||'UN', cantidad:it.cantidad, unitario:it.unitario};
       });
     });
   }
-  return {lotes:lotes, centros:centros};
+  // Otros centros (bloque "OTROS COSTOS"): cada centro listado queda igual a la planilla
+  if(P.otros && P.otros.length){
+    _impAgruparCentros(P.otros).forEach(function(G){
+      var C=centros.find(function(c){return _claveCentro(c.nombre)===_claveCentro(G.nombre);});
+      if(!C){ C={nombre:G.nombre, cls:_IMP_CLS[_claveCentro(G.nombre)]||'tadm', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(C); }
+      C.tieneSubcentros=true; C.items=[];
+      C.subcentros=G.subcentros.map(function(s){ return {nombre:s.nombre, items:s.items}; });
+    });
+  }
+  var otrosNombres=P.otros&&P.otros.length?_impAgruparCentros(P.otros).map(function(G){return _claveCentro(G.nombre);}):[];
+  return {lotes:lotes, centros:centros, otrosNombres:otrosNombres};
 }
 function _impFmt(n){ return (Math.round((Number(n)||0)*100)/100).toLocaleString('es-CL'); }
 // Lista de cambios legibles entre lo actual y lo nuevo (lotes, terreno y urbanización)
@@ -3239,7 +3339,26 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
     var sa=uA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
     var itemsA=sa?sa.items:[];
     if(!sa) dif.push({grupo:'Urbanización · '+sn.nombre, txt:'Sub-costo nuevo', tipo:'nuevo'});
+    else if(sa.nombre!==sn.nombre) dif.push({grupo:'Urbanización · '+sn.nombre, txt:'Sub-costo renombrado: "'+sa.nombre+'" → "'+sn.nombre+'"'});
     if(JSON.stringify(itemsA)!==JSON.stringify(sn.items)) comparar('Urbanización · '+sn.nombre, itemsA, sn.items);
+  });
+  // Otros centros que trae la planilla (se comparan sub-costo por sub-costo)
+  (nuevo.otrosNombres||[]).forEach(function(kc){
+    var cN=nuevo.centros.find(function(c){return _claveCentro(c.nombre)===kc;});
+    var cA=centrosAnt.find(function(c){return _claveCentro(c.nombre)===kc;});
+    if(!cN) return;
+    if(!cA) dif.push({grupo:cN.nombre, txt:'Centro de costo nuevo', tipo:'nuevo'});
+    var subsA=cA?(cA.subcentros||[]):[];
+    cN.subcentros.forEach(function(sn){
+      var sa=subsA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
+      if(cA && !sa) dif.push({grupo:cN.nombre+' · '+(sn.nombre||'—'), txt:'Sub-costo nuevo', tipo:'nuevo'});
+      if(JSON.stringify(sa?sa.items:[])!==JSON.stringify(sn.items)) comparar(cN.nombre+' · '+(sn.nombre||'—'), sa?sa.items:[], sn.items);
+    });
+    subsA.forEach(function(sa){
+      if(!cN.subcentros.some(function(s){return _claveCentro(s.nombre)===_claveCentro(sa.nombre);}))
+        dif.push({grupo:cN.nombre, txt:'− Sub-costo "'+(sa.nombre||'—')+'" (ya no está en la planilla, se quita)', tipo:'quita'});
+    });
+    if(cA && (cA.items||[]).length) dif.push({grupo:cN.nombre, txt:'− Ítems sueltos del centro (ahora van por sub-costo)', tipo:'quita'});
   });
   return dif;
 }
@@ -3278,6 +3397,48 @@ async function _impPlanificar(wb){
     plan.etapas.push({etapa:e, hoja:hoja, P:P, nuevo:nuevo, dif:dif, antes:_impTotal(lotesAnt,centrosAnt), despues:_impTotal(nuevo.lotes,nuevo.centros)});
   });
   Object.keys(hojas).forEach(function(n){ if(!usadas[n]) plan.avisos.push('La hoja "'+hojas[n]+'" no corresponde a ninguna etapa del flujo (se ignora).'); });
+  // Gastos de proyecto desde la hoja "Variables" (bloque "GASTOS DE PROYECTO")
+  plan.gastos={dif:[], upd:[], nuevos:[]};
+  var hv=wb.SheetNames.find(function(n){return _claveCentro(n)==='variables';});
+  if(hv){
+    var gv=_impGrilla(wb.Sheets[hv]), pg=_impBuscar(gv,'GASTOS DE PROYECTO');
+    var filasG=pg?_impTablaCentros(gv,pg.r+1,pg.c):null;
+    if(pg && !filasG) plan.avisos.push('Variables: "GASTOS DE PROYECTO" sin encabezado CENTRO / SUBCOSTO / ITEM / UN / CANTIDAD / UNITARIO.');
+    if(filasG){
+      var rg=await sb.from('loteo_gastos_proyecto').select('*').order('orden');
+      var web=rg.data||[];
+      var norm=function(subs){ return (subs||[]).map(function(s){ return {nombre:s.nombre||'', items:(s.items||[]).map(function(i){ return {nombre:i.nombre, und:i.und||'UN', cantidad:Number(i.cantidad)||0, unitario:Number(i.unitario)||0}; })}; }); };
+      _impAgruparCentros(filasG).forEach(function(G){
+        var w=web.find(function(x){return _claveCentro(x.nombre)===_claveCentro(G.nombre);});
+        var subsN=norm(G.subcentros);
+        if(!w){ plan.gastos.nuevos.push({nombre:G.nombre, subcentros:subsN}); plan.gastos.dif.push({grupo:'Gastos de proyecto · '+G.nombre, txt:'Gasto de proyecto nuevo ('+f1(calcGastoProyecto({tieneSubcentros:true, subcentros:subsN}))+' UF)', tipo:'nuevo'}); return; }
+        var subsA=norm(w.tiene_subcentros?w.subcentros:[{nombre:'', items:w.items}]);
+        var difs=[];
+        if(w.nombre!==G.nombre) difs.push({txt:'Nombre "'+w.nombre+'" → "'+G.nombre+'"'});
+        subsN.forEach(function(sn){
+          var sa=subsA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
+          if(!sa){ difs.push({txt:'+ Sub-costo "'+sn.nombre+'"', tipo:'nuevo'}); return; }
+          sn.items.forEach(function(it){
+            var a=sa.items.find(function(i){return _claveCentro(i.nombre)===_claveCentro(it.nombre);});
+            if(!a){ difs.push({txt:'+ '+sn.nombre+' › '+it.nombre+': '+_impFmt(it.cantidad)+' × '+_impFmt(it.unitario)+' UF', tipo:'nuevo'}); return; }
+            var ch=[]; if(Math.abs(a.cantidad-it.cantidad)>0.0001) ch.push('cantidad '+_impFmt(a.cantidad)+' → '+_impFmt(it.cantidad));
+            if(Math.abs(a.unitario-it.unitario)>0.0001) ch.push('unitario '+_impFmt(a.unitario)+' → '+_impFmt(it.unitario)+' UF');
+            if(a.nombre!==it.nombre) ch.push('nombre "'+a.nombre+'" → "'+it.nombre+'"'); if((a.und||'')!==(it.und||'')) ch.push('unidad '+a.und+' → '+it.und);
+            if(ch.length) difs.push({txt:sn.nombre+' › '+it.nombre+': '+ch.join(' · ')});
+          });
+          sa.items.forEach(function(a){ if(!sn.items.some(function(i){return _claveCentro(i.nombre)===_claveCentro(a.nombre);})) difs.push({txt:'− '+sn.nombre+' › '+a.nombre+' (se quita)', tipo:'quita'}); });
+        });
+        subsA.forEach(function(sa){ if(!subsN.some(function(s){return _claveCentro(s.nombre)===_claveCentro(sa.nombre);})) difs.push({txt:'− Sub-costo "'+sa.nombre+'" (se quita)', tipo:'quita'}); });
+        if(difs.length){
+          var expA={}; (w.subcentros||[]).forEach(function(s){ expA[_claveCentro(s.nombre)]=s.expandido; });
+          plan.gastos.upd.push({id:w.id, nombre:G.nombre, subcentros:subsN.map(function(s){ return {nombre:s.nombre, expandido:expA[_claveCentro(s.nombre)]!==false, items:s.items}; })});
+          difs.forEach(function(d){ plan.gastos.dif.push({grupo:'Gastos de proyecto · '+G.nombre, txt:d.txt, tipo:d.tipo}); });
+        }
+      });
+      web.forEach(function(w){ if(!filasG.some(function(f){return _claveCentro(f.centro)===_claveCentro(w.nombre);})) plan.avisos.push('Gasto de proyecto "'+w.nombre+'" está en la web pero no en la planilla (no se borra).'); });
+      plan.cambios+=plan.gastos.dif.length;
+    }
+  }
   return plan;
 }
 function _impHtmlPlan(plan, archivo){
@@ -3303,6 +3464,15 @@ function _impHtmlPlan(plan, archivo){
     }
     h+='</details>';
   });
+  if(plan.gastos && plan.gastos.dif.length){
+    h+='<details open style="border:0.5px solid var(--color-border-tertiary);border-radius:8px;margin-bottom:6px;padding:6px 10px"><summary style="cursor:pointer;font-size:12px"><b>Gastos de proyecto</b> <span style="color:var(--color-text-tertiary)">(hoja Variables)</span> — <b>'+plan.gastos.dif.length+'</b> cambio'+(plan.gastos.dif.length===1?'':'s')+'</summary>';
+    var gg={}; plan.gastos.dif.forEach(function(d){ (gg[d.grupo]=gg[d.grupo]||[]).push(d); });
+    Object.keys(gg).forEach(function(gname){
+      h+='<div style="margin:6px 0 2px;font-size:11px;font-weight:600;color:var(--color-text-secondary)">'+_impEsc(gname)+'</div>';
+      gg[gname].forEach(function(d){ var col=d.tipo==='nuevo'?'#0F6E56':(d.tipo==='quita'?'#A32D2D':'inherit'); h+='<div style="font-size:11px;padding-left:10px;color:'+col+'">'+_impEsc(d.txt)+'</div>'; });
+    });
+    h+='</details>';
+  }
   return h;
 }
 function _impModal(html, puedeAplicar){
@@ -3353,10 +3523,22 @@ async function aplicarImportacionPlanilla(){
         })()
       ]);
     }));
+    // Gastos de proyecto (hoja Variables): actualizar los existentes y crear los nuevos
+    var GP=_impPlan.gastos||{upd:[], nuevos:[]};
+    for(const u of GP.upd){
+      var ru=await sb.from('loteo_gastos_proyecto').update({nombre:u.nombre, tiene_subcentros:true, subcentros:u.subcentros, items:[], monto:calcGastoProyecto({tieneSubcentros:true, subcentros:u.subcentros})}).eq('id', u.id);
+      if(ru.error) throw ru.error;
+    }
+    for(const n of GP.nuevos){
+      var subsNv=n.subcentros.map(function(s){ return {nombre:s.nombre, expandido:true, items:s.items}; });
+      var rn=await sb.from('loteo_gastos_proyecto').insert({nombre:n.nombre, tipo_prorrateo:'m2', etapa_especifica_id:null, orden:0, tiene_subcentros:true, subcentros:subsNv, items:[], monto:calcGastoProyecto({tieneSubcentros:true, subcentros:subsNv})});
+      if(rn.error) throw rn.error;
+    }
     await refrescarGastosDeProyecto(); // la superficie de lotes pudo cambiar -> prorrateo por m²
     if(vistaConsolidado) await mostrarConsolidado(); else await _cargarLotesCentrosDeEtapaActiva();
     var p=document.getElementById('imp-progreso');
-    if(p){ p.style.background='#EAF3DE'; p.style.color='#27500A'; p.textContent='Listo: se actualizaron '+conCambios.length+' etapa'+(conCambios.length===1?'':'s')+' desde la planilla.'; }
+    var nGP=(GP.upd||[]).length+(GP.nuevos||[]).length;
+    if(p){ p.style.background='#EAF3DE'; p.style.color='#27500A'; p.textContent='Listo: se actualizaron '+conCambios.length+' etapa'+(conCambios.length===1?'':'s')+(nGP?' y '+nGP+' gasto'+(nGP===1?'':'s')+' de proyecto':'')+' desde la planilla.'; }
     btn.style.display='none';
     document.getElementById('imp-btn-cerrar').textContent='Cerrar';
     _impPlan=null;
@@ -4284,6 +4466,7 @@ async function guardarGasto(){
 
   const saveBtn=document.querySelector('#modal-overlay .btn-save');
   if(saveBtn) saveBtn.disabled=true;
+  let regNuevoId=null; // si es un gasto nuevo y falla algo después de insertarlo, se borra (evita duplicados al reintentar)
   try{
     const campos={ fecha, tipo_doc:tipoDoc, centro, subcentro, desglose, monto, forma_pago:formaPago, nota,
       etapa_id: etapaId };
@@ -4295,7 +4478,7 @@ async function guardarGasto(){
     } else {
       const ins=await sb.from('loteo_registros_gastos').insert(campos).select().single();
       if(ins.error) throw ins.error;
-      regId=ins.data.id;
+      regId=ins.data.id; regNuevoId=regId;
     }
 
     const adjuntosFinal=[];
@@ -4309,6 +4492,7 @@ async function guardarGasto(){
     }
     const updAdj=await sb.from('loteo_registros_gastos').update({adjuntos:adjuntosFinal}).eq('id',regId);
     if(updAdj.error) throw updAdj.error;
+    regNuevoId=null; // guardado completo
 
     await cargarRegsGlobalDesdeNube();
     if(etapaActivaId) await cargarRegistrosDesdeNube(); // por si afecta el costo real de la etapa que se ve en Flujo
@@ -4320,7 +4504,8 @@ async function guardarGasto(){
     buildComparativa();
     buildCos(); // actualiza costo real y variación en Flujo Etapa X
   }catch(e){
-    alert('No se pudo guardar el gasto: '+e.message);
+    if(regNuevoId!==null){ try{ await sb.from('loteo_registros_gastos').delete().eq('id',regNuevoId); }catch(_){} }
+    alert('No se pudo guardar el gasto: '+e.message+(regNuevoId!==null?'\n(No quedó registrado; puedes intentarlo de nuevo.)':''));
   }finally{
     if(saveBtn) saveBtn.disabled=false;
   }
@@ -6146,7 +6331,7 @@ async function guardarOC(){
     let ocIdActual=editandoOCIdx!==null?ordenesCompra[editandoOCIdx].id:null;
     let archivoPrevio=editandoOCIdx!==null?ordenesCompra[editandoOCIdx].archivo:null;
     if(ocArchivoTemp && ocArchivoTemp._file){
-      const path='oc/'+etapaActivaId+'/'+(ocIdActual||'nueva')+'/'+Date.now()+'_'+ocArchivoTemp._file.name;
+      const path='oc/'+etapaActivaId+'/'+(ocIdActual||'nueva')+'/'+Date.now()+'_'+_nombreSeguroStorage(ocArchivoTemp._file.name);
       const up=await sb.storage.from('loteo-documentos').upload(path, ocArchivoTemp._file);
       if(up.error) throw up.error;
       campos.archivo_nombre=ocArchivoTemp.nombre;
@@ -6675,7 +6860,7 @@ async function onApColFileChange(event){
   const files=[...event.target.files];
   const colId = apUploadTargetColId;
   for(const file of files){
-    const path='anteproyecto/'+apTableroActualId+'/col_'+(colId===null?'sin':colId)+'/'+Date.now()+'_'+file.name;
+    const path='anteproyecto/'+apTableroActualId+'/col_'+(colId===null?'sin':colId)+'/'+Date.now()+'_'+_nombreSeguroStorage(file.name);
     const up=await sb.storage.from('loteo-documentos').upload(path, file);
     if(up.error){ alert('No se pudo subir "'+file.name+'": '+up.error.message); continue; }
     await sb.from('loteo_anteproyecto_archivos').insert({
@@ -6851,7 +7036,7 @@ async function eliminarCarpetaAnteproyecto(id){
 async function subirArchivoAnteproyecto(event){
   const files=[...event.target.files];
   for(const file of files){
-    const path='anteproyecto/'+(apCarpetaActualId||'raiz')+'/'+Date.now()+'_'+file.name;
+    const path='anteproyecto/'+(apCarpetaActualId||'raiz')+'/'+Date.now()+'_'+_nombreSeguroStorage(file.name);
     const up=await sb.storage.from('loteo-documentos').upload(path, file);
     if(up.error){ alert('No se pudo subir "'+file.name+'": '+up.error.message); continue; }
     await sb.from('loteo_anteproyecto_archivos').insert({
