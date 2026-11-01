@@ -2094,13 +2094,28 @@ function _agregarDesgloseCentro(c){
     mapa[k].cantidad+=Number(it.cantidad)||0;
     mapa[k].total+=calcItem(it);
   };
+  // Urbanización: "Pavimentación" y "Pavimentación Av. del Astillero" son un solo ítem;
+  // al desplegarlo se divide en Av. del Astillero y Condominio Etapa N.
+  var esUrb=_claveCentro(c.nombre)==='urbanizacion';
   c.porEtapa.forEach(function(pe){
     var ct=pe.centro;
     if(ct.tieneSubcentros && ct.subcentros && ct.subcentros.length){
       ct.subcentros.forEach(function(sc){
-        var ks=_claveCentro(sc.nombre);
-        if(!subs[ks]){ subs[ks]={clave:ks, nombre:sc.nombre, total:0, items:{}, orden:[]}; ordenSubs.push(ks); }
+        var nombreBase=sc.nombre, grupo=null, ordenG=0;
+        if(esUrb){
+          var mAv=String(sc.nombre).match(/^(.*?)\s+av\.?\s+del\s+astillero\s*$/i);
+          var mEt=String(pe.etapaNombre).match(/(\d+)/);
+          if(mAv){ nombreBase=mAv[1]; grupo='Av. del Astillero'; ordenG=0; }
+          else { grupo='Condominio Etapa '+(mEt?mEt[1]:pe.etapaNombre); ordenG=mEt?+mEt[1]:99; }
+        }
+        var ks=_claveCentro(nombreBase);
+        if(!subs[ks]){ subs[ks]={clave:ks, nombre:nombreBase, total:0, items:{}, orden:[], grupos:{}}; ordenSubs.push(ks); }
         (sc.items||[]).forEach(function(it){ sumarItem(subs[ks].items, subs[ks].orden, it); });
+        if(grupo){
+          var kg=_claveCentro(grupo), G=subs[ks].grupos;
+          if(!G[kg]) G[kg]={clave:ks+'|'+kg, nombre:grupo, ordenG:ordenG, items:{}, orden:[]};
+          (sc.items||[]).forEach(function(it){ sumarItem(G[kg].items, G[kg].orden, it); });
+        }
       });
     } else {
       (ct.items||[]).forEach(function(it){ sumarItem(items, ordenItems, it); });
@@ -2109,7 +2124,11 @@ function _agregarDesgloseCentro(c){
   var subcentros=ordenSubs.map(function(ks){
     var s=subs[ks];
     var its=s.orden.map(function(k){return s.items[k];});
-    return {clave:s.clave, nombre:s.nombre, items:its, total:its.reduce(function(a,it){return a+it.total;},0)};
+    var grupos=Object.keys(s.grupos).map(function(kg){
+      var g=s.grupos[kg], gi=g.orden.map(function(k){return g.items[k];});
+      return {clave:g.clave, nombre:g.nombre, ordenG:g.ordenG, items:gi, total:gi.reduce(function(a,it){return a+it.total;},0)};
+    }).sort(function(a,b){return a.ordenG-b.ordenG;});
+    return {clave:s.clave, nombre:s.nombre, items:its, grupos:grupos, total:its.reduce(function(a,it){return a+it.total;},0)};
   });
   return {subcentros:subcentros, items:ordenItems.map(function(k){return items[k];})};
 }
@@ -2130,7 +2149,18 @@ function _htmlDesgloseAgregado(c, ci){
         <button class="sub-toggle" onclick="toggleConsCosAgg(${ci},'${s.clave.replace(/'/g,"\\'")}')">${exp[s.clave]?'−':'+'}</button>
         ${s.nombre||'(sin nombre)'}</td>
       <td class="neg">${fval(s.total)}</td><td></td><td></td></tr>`;
-    if(exp[s.clave]) s.items.forEach(function(it){ html+=_htmlItemAgregado(it, 46); });
+    if(exp[s.clave]){
+      if(s.grupos && s.grupos.length){
+        s.grupos.forEach(function(g){
+          html+=`<tr class="subitem-row">
+            <td style="padding-left:46px;color:var(--color-text-secondary)">
+              <button class="sub-toggle" onclick="toggleConsCosAgg(${ci},'${g.clave.replace(/'/g,"\\'")}')" style="width:16px;height:16px;font-size:10px">${exp[g.clave]?'−':'+'}</button>
+              ${g.nombre}</td>
+            <td class="neg">${fval(g.total)}</td><td></td><td></td></tr>`;
+          if(exp[g.clave]) g.items.forEach(function(it){ html+=_htmlItemAgregado(it, 66); });
+        });
+      } else s.items.forEach(function(it){ html+=_htmlItemAgregado(it, 46); });
+    }
   });
   agg.items.forEach(function(it){ html+=_htmlItemAgregado(it, 22); });
   return html;
