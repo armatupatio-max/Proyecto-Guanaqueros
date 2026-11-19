@@ -547,6 +547,9 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   <button class="tab-btn active" onclick="showTab('flujo',this)">
     <i class="ti ti-layout-list" style="font-size:14px"></i> Flujo proyectado
   </button>
+  <button class="tab-btn" onclick="showTab('eerr',this)">
+    <i class="ti ti-report-money" style="font-size:14px"></i> Estado de resultados
+  </button>
   <button class="tab-btn" onclick="showTab('registro',this)">
     <i class="ti ti-cash-register" style="font-size:14px"></i> Centro de costos
   </button>
@@ -662,6 +665,13 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 
 </div>
 </div><!-- /panel-flujo -->
+
+<!-- PANEL ESTADO DE RESULTADOS -->
+<div class="tab-panel" id="panel-eerr">
+<div class="flujo">
+<div id="eerr-wrap"></div>
+</div>
+</div>
 
 <!-- PANEL REGISTRO DE GASTOS -->
 <div class="tab-panel" id="panel-registro">
@@ -1656,6 +1666,126 @@ async function calcularConsolidadoCostos(){
 }
 function _claveCentro(nombre){
   return String(nombre||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ESTADO DE RESULTADOS — solo movimientos netos, por etapa.
+   Ingresos netos = ventas brutas (Partida 1, con IVA) − IVA débito
+   (ítem de débito del centro "Iva Venta" de cada etapa, que viene de
+   la hoja IVA de la planilla). Costos netos = todos los centros de
+   Partida 2 salvo "Iva Venta" (el IVA no es ingreso ni costo),
+   incluido el reflejo prorrateado de Gastos de Proyecto. Sobre el
+   resultado antes de impuestos se aplica el impuesto a la renta.
+   ═══════════════════════════════════════════════════════════════ */
+const TASA_IMPUESTO_RENTA = 0.125;
+let eerrDatos = null;
+
+function _ivaDebitoDeCentro(c){
+  var items=(c.items||[]).slice();
+  (c.subcentros||[]).forEach(function(sc){ items=items.concat(sc.items||[]); });
+  return items.filter(function(it){ return /d[eé]bito/i.test(it.nombre||''); })
+    .reduce(function(a,it){ return a+(Number(it.cantidad)||0)*(Number(it.unitario)||0); },0);
+}
+
+async function initEstadoResultados(){
+  var wrap=document.getElementById('eerr-wrap');
+  wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">Cargando…</div>';
+  await _guardarSiHayCambios();
+  var res=await Promise.all([
+    sb.from('loteo_lotes').select('*').order('orden'),
+    sb.from('loteo_centros').select('*').order('orden')
+  ]);
+  if(res[0].error||res[1].error){
+    wrap.innerHTML='<div style="padding:24px;text-align:center;color:#A32D2D">No se pudieron leer los datos: '+((res[0].error||res[1].error).message)+'</div>';
+    return;
+  }
+  var lotesPorEtapa={}, centrosPorEtapa={};
+  (res[0].data||[]).forEach(function(r){ (lotesPorEtapa[r.etapa_id]=lotesPorEtapa[r.etapa_id]||[]).push(r); });
+  (res[1].data||[]).forEach(function(r){ (centrosPorEtapa[r.etapa_id]=centrosPorEtapa[r.etapa_id]||[]).push(r); });
+
+  var orden=[], nombres={};
+  var cols=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);}).map(function(e){
+    var f=_sensFactores(e.id);
+    var bruto=_escalarLotes((lotesPorEtapa[e.id]||[]).map(_mapLoteRow), f.ing).reduce(function(a,l){return a+calcLote(l).totalUF;},0);
+    var debito=0, tieneIva=false, costos={};
+    (centrosPorEtapa[e.id]||[]).map(_mapCentroRow).forEach(function(c0){
+      var clave=_claveCentro(c0.nombre);
+      if(clave==='iva venta'){ tieneIva=true; debito+=_ivaDebitoDeCentro(c0); return; }
+      var c=c0.nombre==='Gastos de Proyecto' ? c0 : _escalarCentro(c0, f.cos);
+      if(!nombres[clave]){ nombres[clave]=c0.nombre; orden.push(clave); }
+      costos[clave]=(costos[clave]||0)+calcCentro(c);
+    });
+    return {nombre:String(e.nombre).split('·')[0].trim(), bruto:bruto, debito:debito, tieneIva:tieneIva, costos:costos};
+  });
+  // Gastos de Proyecto siempre al final de los costos
+  var iGP=orden.indexOf(_claveCentro('Gastos de Proyecto'));
+  if(iGP>=0) orden.push(orden.splice(iGP,1)[0]);
+  eerrDatos={cols:cols, orden:orden, nombres:nombres};
+  renderEstadoResultados();
+}
+
+function renderEstadoResultados(){
+  var wrap=document.getElementById('eerr-wrap');
+  if(!eerrDatos){ wrap.innerHTML=''; return; }
+  var cols=eerrDatos.cols, orden=eerrDatos.orden;
+  var suma=function(fn){ return cols.reduce(function(a,c){return a+fn(c);},0); };
+  cols.forEach(function(c){
+    c.neto=c.bruto-c.debito;
+    c.totCos=orden.reduce(function(a,k){return a+(c.costos[k]||0);},0);
+    c.rai=c.neto-c.totCos;
+  });
+  var tot={bruto:suma(function(c){return c.bruto;}), debito:suma(function(c){return c.debito;}), neto:suma(function(c){return c.neto;}),
+    totCos:suma(function(c){return c.totCos;}), rai:suma(function(c){return c.rai;})};
+  // El impuesto se paga sobre el resultado del proyecto completo; por
+  // etapa se reparte según su resultado (si el total es pérdida, no hay impuesto).
+  cols.forEach(function(c){ c.imp=tot.rai>0 ? c.rai*TASA_IMPUESTO_RENTA : 0; c.fin=c.rai-c.imp; });
+  tot.imp=tot.rai>0 ? tot.rai*TASA_IMPUESTO_RENTA : 0;
+  tot.fin=tot.rai-tot.imp;
+
+  var pct=function(v){ return tot.neto>0 ? fpct(v/tot.neto*100) : '—'; };
+  var celdas=function(fn, totV, opts){
+    opts=opts||{};
+    var signo=opts.resta?'− ':'';
+    return cols.map(function(c){ return '<td>'+signo+fval(fn(c))+'</td>'; }).join('')
+      + '<td style="font-weight:500">'+signo+fval(totV)+'</td><td style="color:var(--color-text-tertiary)">'+pct(totV)+'</td>';
+  };
+  var fila=function(txt, fn, totV, cls, opts){ return '<tr'+(cls?' class="'+cls+'"':'')+'><td>'+txt+'</td>'+celdas(fn, totV, opts)+'</tr>'; };
+  var tasaTxt=f1(TASA_IMPUESTO_RENTA*100).replace(/,0$/,'')+'%';
+  var sinIva=cols.filter(function(c){return !c.tieneIva;}).map(function(c){return c.nombre;});
+  var anchoEt=Math.floor(46/Math.max(cols.length,1));
+
+  wrap.innerHTML=`
+    <div class="metric-strip" style="margin-bottom:1.25rem">
+      <div class="metric pos"><div class="metric-label">Ingresos netos por ventas</div><div class="metric-value">${fval(tot.neto)}</div><div class="metric-sub">sin IVA</div></div>
+      <div class="metric neg"><div class="metric-label">Costos netos</div><div class="metric-value">${fval(tot.totCos)}</div></div>
+      <div class="metric ${tot.rai>=0?'pos':'neg'}"><div class="metric-label">Resultado antes de impuestos</div><div class="metric-value">${fval(tot.rai)}</div><div class="metric-sub">${pct(tot.rai)} sobre ingresos netos</div></div>
+      <div class="metric ${tot.fin>=0?'pos':'neg'}"><div class="metric-label">Resultado final</div><div class="metric-value">${fval(tot.fin)}</div><div class="metric-sub">después de impuesto a la renta (${tasaTxt})</div></div>
+    </div>
+
+    <div class="section-hdr res">
+      <i class="ti ti-report-money" style="font-size:15px;color:#3B6D11"></i>
+      <span class="shdr-title res">Estado de resultados · Proyecto completo</span>
+      <span class="shdr-badge res">Neto de IVA</span>
+    </div>
+    <table class="ft res">
+      <colgroup><col style="width:34%">${cols.map(function(){return '<col style="width:'+anchoEt+'%">';}).join('')}<col style="width:12%"><col style="width:8%"></colgroup>
+      <thead><tr><th style="text-align:left">Concepto</th>${cols.map(function(c){return '<th>'+c.nombre+'</th>';}).join('')}<th>Total</th><th>% ingresos</th></tr></thead>
+      <tbody>
+        ${fila('Ventas brutas (con IVA)', function(c){return c.bruto;}, tot.bruto)}
+        ${fila('IVA débito fiscal', function(c){return c.debito;}, tot.debito, '', {resta:true})}
+        ${fila('Ingresos netos por ventas', function(c){return c.neto;}, tot.neto, 'total-row')}
+        <tr class="partida-row"><td colspan="${cols.length+3}">Costos netos</td></tr>
+        ${orden.map(function(k){ return fila(k==='ventas'?'Comisión de ventas':eerrDatos.nombres[k], function(c){return c.costos[k]||0;}, suma(function(c){return c.costos[k]||0;}), 'desglose-row'); }).join('')}
+        ${fila('Total costos netos', function(c){return c.totCos;}, tot.totCos, 'total-row')}
+        ${fila('Resultado antes de impuestos', function(c){return c.rai;}, tot.rai, 'total-row')}
+        ${fila('Impuesto a la renta ('+tasaTxt+')', function(c){return c.imp;}, tot.imp, '', {resta:true})}
+        ${fila('Resultado final', function(c){return c.fin;}, tot.fin, 'total-row')}
+      </tbody>
+    </table>
+    <div style="font-size:11px;color:var(--color-text-tertiary);line-height:1.6;margin-top:-0.5rem">
+      El IVA no es ingreso ni costo: las ventas se llevan a neto restando el IVA débito (calculado en la hoja IVA de la planilla sobre la venta menos el terreno, que es exento), y los costos ya están netos. Por eso el centro "Iva Venta" no aparece aquí.
+      ${sinIva.length?'<br><span style="color:#A32D2D">Sin centro "Iva Venta" (IVA débito en 0): '+sinIva.join(', ')+'.</span>':''}
+    </div>`;
 }
 
 async function mostrarConsolidado(){
@@ -2892,6 +3022,7 @@ function showTab(id, btn){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   document.getElementById('panel-'+id).classList.add('active');
   btn.classList.add('active');
+  if(id==='eerr') initEstadoResultados();
   if(id==='registro') initRegistroPanel();
   if(id==='cotizaciones') initCotizacionesPanel();
   if(id==='ordencompra') initOCPanel();
@@ -3006,6 +3137,7 @@ function toggleMoneda(){
   modoClp=!modoClp;
   updateHeaders();
   if(vistaConsolidado){ renderConsolidado(); } else { recalc(); }
+  if(eerrDatos) renderEstadoResultados();
 }
 /* ---- SENSIBILIDAD: modal ---- */
 function _fmtSens(f){
