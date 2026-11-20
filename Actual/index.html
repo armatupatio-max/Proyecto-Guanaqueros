@@ -550,6 +550,9 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   <button class="tab-btn" onclick="showTab('eerr',this)">
     <i class="ti ti-report-money" style="font-size:14px"></i> Estado de resultados
   </button>
+  <button class="tab-btn" onclick="showTab('superficies',this)">
+    <i class="ti ti-ruler-measure" style="font-size:14px"></i> Superficies
+  </button>
   <button class="tab-btn" onclick="showTab('registro',this)">
     <i class="ti ti-cash-register" style="font-size:14px"></i> Centro de costos
   </button>
@@ -670,6 +673,13 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
 <div class="tab-panel" id="panel-eerr">
 <div class="flujo">
 <div id="eerr-wrap"></div>
+</div>
+</div>
+
+<!-- PANEL SUPERFICIES -->
+<div class="tab-panel" id="panel-superficies">
+<div class="flujo">
+<div id="sup-wrap"></div>
 </div>
 </div>
 
@@ -1666,6 +1676,162 @@ async function calcularConsolidadoCostos(){
 }
 function _claveCentro(nombre){
   return String(nombre||'').normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SUPERFICIES — dibuja sobre el plano de la Etapa 1 (etapa-01.png,
+   3000×2626 px, escala ≈ 6,12 px/m) lo que se cobra en el tramo de
+   Av. del Astillero. La geometría sale del plano (bordes de la calzada
+   azul y de la vereda naranja); las cantidades y montos de las
+   etiquetas salen de los ítems "… Av. del Astillero" del centro
+   Urbanización de la primera etapa, que vienen de la planilla.
+   ═══════════════════════════════════════════════════════════════ */
+const SUP_AV = {
+  img:'img/etapas/etapa-01.png', ancho:3000, alto:2626, vista:'1360 425 1090 680',
+  // bordes de la calzada en el plano: [y, x oeste, x este]
+  calzada:[[437,1929,1970],[600,1918,1959],[760,1908,1949],[800,1905,1946],[900,1905,1936],[920,1889,1932],[1020,1870,1911],[1032,1868,1909]],
+  // vereda poniente, cortada por el acceso al condominio
+  veredas:[[[1912,437],[1902,600],[1893,775]], [[1875,910],[1866,960],[1855,1030]]]
+};
+const SUP_ITEMS = [
+  {k:'calzada', grupo:'pav', re:/calzada/i, no:/base/i, color:'#2F6FD6', nombre:'Calzada de hormigón'},
+  {k:'baseCalzada', grupo:'pav', re:/base.*calzada/i, color:'#2F6FD6', nombre:'Base estabilizada calzada'},
+  {k:'soleras', grupo:'pav', re:/solera/i, color:'#D7263D', nombre:'Soleras tipo A'},
+  {k:'vereda', grupo:'pav', re:/vereda/i, no:/base/i, color:'#E8902A', nombre:'Vereda de hormigón'},
+  {k:'baseVereda', grupo:'pav', re:/base.*vereda/i, color:'#E8902A', nombre:'Base estabilizada vereda'},
+  {k:'agua', grupo:'red', sub:/agua potable/i, color:'#00A3CC', nombre:'Matriz de agua potable'},
+  {k:'alcantarillado', grupo:'red', sub:/alcantarillado/i, color:'#8B5A2B', nombre:'Colector de alcantarillado'},
+  {k:'lluvias', grupo:'red', sub:/aguas lluvias/i, color:'#1F9D74', nombre:'Aguas lluvias'},
+  {k:'electrico', grupo:'red', sub:/el[eé]ctric/i, color:'#C99A00', nombre:'Red eléctrica y alumbrado'}
+];
+let supDatos = null;
+
+async function initSuperficies(){
+  var wrap=document.getElementById('sup-wrap');
+  wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">Cargando…</div>';
+  var primera=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);})[0];
+  var res=await sb.from('loteo_centros').select('*').eq('etapa_id', primera.id);
+  if(res.error){ wrap.innerHTML='<div style="padding:24px;text-align:center;color:#A32D2D">No se pudieron leer los datos: '+res.error.message+'</div>'; return; }
+  var urb=(res.data||[]).map(_mapCentroRow).find(function(c){ return _claveCentro(c.nombre)==='urbanizacion'; });
+  var subs=(urb&&urb.subcentros||[]).filter(function(sc){ return /astillero/i.test(sc.nombre||''); });
+  var porClave={}, filas=[];
+  subs.forEach(function(sc){
+    (sc.items||[]).forEach(function(it){
+      var total=(Number(it.cantidad)||0)*(Number(it.unitario)||0);
+      var def=SUP_ITEMS.find(function(d){
+        if(d.sub) return d.sub.test(sc.nombre) && !/utilidad/i.test(it.nombre);
+        return d.re.test(it.nombre) && !(d.no && d.no.test(it.nombre)) && !/utilidad/i.test(it.nombre);
+      });
+      var fila={sub:sc.nombre, nombre:it.nombre, und:it.und, cantidad:Number(it.cantidad)||0, unitario:Number(it.unitario)||0, total:total, def:def, grupo:def?def.grupo:(/pavimentaci/i.test(sc.nombre)?'pav':'red')};
+      if(def) porClave[def.k]=fila;
+      filas.push(fila);
+    });
+  });
+  supDatos={etapa:primera.nombre, porClave:porClave, filas:filas};
+  renderSuperficies();
+}
+
+function _supNum(n){ return Number(n).toLocaleString('es-CL',{maximumFractionDigits:1}); }
+function _supUnd(u){ u=String(u||'').toUpperCase(); return u==='M2'?'m²':u==='ML'?'ml':u==='UN'?'un':u==='UF'?'UF':u.toLowerCase(); }
+function _supDetalle(f){ return f ? _supNum(f.cantidad)+' '+_supUnd(f.und)+' · '+fval(f.total) : 'sin dato en el flujo'; }
+
+// Puntos de una línea paralela a la calzada, a una fracción de su ancho (0 = oeste, 1 = este)
+function _supLinea(frac){ return SUP_AV.calzada.map(function(p){ return [p[1]+(p[2]-p[1])*frac, p[0]]; }); }
+function _supPuntoEnY(pts, y){
+  for(var i=1;i<pts.length;i++){ if(y<=pts[i][1]){ var a=pts[i-1], b=pts[i], t=(y-a[1])/((b[1]-a[1])||1); return [a[0]+(b[0]-a[0])*t, y]; } }
+  return pts[pts.length-1];
+}
+// Etiqueta con fondo blanco y línea guía hasta uno o más puntos del dibujo
+function _supEtiqueta(x, y, lado, color, titulo, lineas, anclas){
+  var ancho=Math.max(titulo.length*8.4, Math.max.apply(null, lineas.map(function(l){return l.length*7.4;})))+22;
+  var alto=26+lineas.length*18;
+  var x0=lado==='izq' ? x-ancho : x;
+  var bordeX=lado==='izq' ? x : x0;
+  var guias=anclas.map(function(a){ return `<polyline points="${bordeX},${y+alto/2} ${a[0]},${a[1]}" fill="none" stroke="${color}" stroke-width="2"/><circle cx="${a[0]}" cy="${a[1]}" r="4.5" fill="#fff" stroke="${color}" stroke-width="2.5"/>`; }).join('');
+  var esc=function(t){ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;'); };
+  return guias+`<rect x="${x0}" y="${y}" width="${ancho}" height="${alto}" rx="6" fill="#fff" fill-opacity="0.96" stroke="${color}" stroke-width="2"/>
+    <rect x="${x0}" y="${y}" width="7" height="${alto}" rx="3" fill="${color}"/>
+    <text x="${x0+15}" y="${y+19}" font-size="15" font-weight="700" fill="#1a1a18">${esc(titulo)}</text>
+    ${lineas.map(function(l,i){ return `<text x="${x0+15}" y="${y+38+i*18}" font-size="13" fill="#3d3d3a">${esc(l)}</text>`; }).join('')}`;
+}
+
+function _supSvg(grupo){
+  var d=supDatos.porClave, partes=[];
+  var poligono=SUP_AV.calzada.map(function(p){return p[1]+','+p[0];}).concat(SUP_AV.calzada.slice().reverse().map(function(p){return p[2]+','+p[0];})).join(' ');
+  var pts=function(arr){ return arr.map(function(p){return p[0]+','+p[1];}).join(' '); };
+  if(grupo==='pav'){
+    partes.push(`<polygon points="${poligono}" fill="#2F6FD6" fill-opacity="0.55" stroke="#1B4FA8" stroke-width="2"/>`);
+    SUP_AV.veredas.forEach(function(v){ partes.push(`<polyline points="${pts(v)}" fill="none" stroke="#E8902A" stroke-width="9" stroke-linecap="round" stroke-opacity="0.9"/>`); });
+    partes.push(`<polyline points="${pts(_supLinea(0))}" fill="none" stroke="#D7263D" stroke-width="4" stroke-dasharray="14 6"/>`);
+    partes.push(_supEtiqueta(2060, 470, 'der', '#2F6FD6', 'Calzada de hormigón e=0,21 m', ['Calzada: '+_supDetalle(d.calzada), 'Base estabilizada e=0,15 m: '+_supDetalle(d.baseCalzada)], [[1952,560]]));
+    partes.push(_supEtiqueta(1800, 610, 'izq', '#D7263D', 'Soleras tipo A', [_supDetalle(d.soleras), 'borde poniente de la calzada'], [_supPuntoEnY(_supLinea(0),690)]));
+    partes.push(_supEtiqueta(1800, 790, 'izq', '#E8902A', 'Vereda de hormigón e=0,07 m (ancho 1,2 m)', ['Vereda: '+_supDetalle(d.vereda), 'Base estabilizada e=0,05 m: '+_supDetalle(d.baseVereda), 'dos tramos, cortados por el acceso'], [[1906,520],[1865,965]]));
+  } else {
+    partes.push(`<polygon points="${poligono}" fill="#9AA3AD" fill-opacity="0.18" stroke="#7B848E" stroke-width="1.5" stroke-dasharray="6 4"/>`);
+    var redes=[['agua',0.2,470],['alcantarillado',0.4,600],['lluvias',0.6,730],['electrico',0.8,860]];
+    redes.forEach(function(r){
+      var def=SUP_ITEMS.find(function(x){return x.k===r[0];});
+      var linea=_supLinea(r[1]);
+      partes.push(`<polyline points="${pts(linea)}" fill="none" stroke="${def.color}" stroke-width="5" stroke-linecap="round"/>`);
+      var f=d[r[0]];
+      partes.push(_supEtiqueta(2060, r[2], 'der', def.color, f?f.nombre:def.nombre, [_supDetalle(f), f&&f.total===0?'precio unitario aún en 0':'a lo largo del tramo'], [_supPuntoEnY(linea, r[2]+40)]));
+    });
+  }
+  return `<svg viewBox="${SUP_AV.vista}" style="width:100%;height:auto;display:block;background:#fff" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,Segoe UI,sans-serif">
+    <image href="${SUP_AV.img}" x="0" y="0" width="${SUP_AV.ancho}" height="${SUP_AV.alto}" style="filter:grayscale(1) opacity(0.55)"/>
+    ${partes.join('')}
+    <rect x="1365" y="1076" width="440" height="24" rx="4" fill="#fff" fill-opacity="0.95"/>
+    <text x="1375" y="1092" font-size="13" fill="#6b6a65">Norte arriba · escala aprox. 6,1 px = 1 m · base: plano de la Etapa 1</text>
+  </svg>`;
+}
+
+function _supTabla(grupo, color, cls){
+  var filas=supDatos.filas.filter(function(f){return f.grupo===grupo;});
+  var tot=filas.reduce(function(a,f){return a+f.total;},0);
+  return `<table class="ft ${cls}">
+    <colgroup><col style="width:30%"><col style="width:30%"><col style="width:8%"><col style="width:10%"><col style="width:10%"><col style="width:12%"></colgroup>
+    <thead><tr><th style="text-align:left">Subcosto</th><th style="text-align:left">Ítem</th><th>Unidad</th><th>Cantidad</th><th>Unitario</th><th>Total</th></tr></thead>
+    <tbody>${filas.map(function(f){ return `<tr><td>${f.def?`<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${f.def.color};margin-right:6px"></span>`:''}${f.sub}</td><td style="text-align:left">${f.nombre}</td><td>${_supUnd(f.und)}</td><td>${_supNum(f.cantidad)}</td><td>${funit(f.unitario)}</td><td>${fval(f.total)}</td></tr>`; }).join('')}
+    <tr class="total-row"><td colspan="5">Total</td><td>${fval(tot)}</td></tr></tbody>
+  </table>`;
+}
+
+function renderSuperficies(){
+  var wrap=document.getElementById('sup-wrap');
+  if(!supDatos) return;
+  if(!supDatos.filas.length){
+    wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">No hay ítems de Av. del Astillero en el centro Urbanización de '+supDatos.etapa+'.</div>';
+    return;
+  }
+  var totPav=supDatos.filas.filter(function(f){return f.grupo==='pav';}).reduce(function(a,f){return a+f.total;},0);
+  var totRed=supDatos.filas.filter(function(f){return f.grupo==='red';}).reduce(function(a,f){return a+f.total;},0);
+  wrap.innerHTML=`
+    <div class="metric-strip" style="margin-bottom:1.25rem">
+      <div class="metric"><div class="metric-label">Calzada de hormigón</div><div class="metric-value">${supDatos.porClave.calzada?_supNum(supDatos.porClave.calzada.cantidad)+' m²':'—'}</div></div>
+      <div class="metric"><div class="metric-label">Vereda de hormigón</div><div class="metric-value">${supDatos.porClave.vereda?_supNum(supDatos.porClave.vereda.cantidad)+' m²':'—'}</div></div>
+      <div class="metric neg"><div class="metric-label">Pavimentación Av. del Astillero</div><div class="metric-value">${fval(totPav)}</div><div class="metric-sub">incluye utilidades del ejecutor</div></div>
+      <div class="metric neg"><div class="metric-label">Redes Av. del Astillero</div><div class="metric-value">${fval(totRed)}</div><div class="metric-sub">agua, alcantarillado, aguas lluvias y eléctrico</div></div>
+    </div>
+
+    <div class="section-hdr ing">
+      <i class="ti ti-road" style="font-size:15px;color:#185FA5"></i>
+      <span class="shdr-title ing">Av. del Astillero · Pavimentación</span>
+      <span class="shdr-badge ing">${supDatos.etapa.split('·')[0].trim()}</span>
+    </div>
+    <div style="border:0.5px solid #B5D4F4;border-top:none;margin-bottom:0.75rem">${_supSvg('pav')}</div>
+    ${_supTabla('pav', '', 'ing')}
+
+    <div class="section-hdr reg">
+      <i class="ti ti-droplet" style="font-size:15px;color:#6B2FA0"></i>
+      <span class="shdr-title reg">Av. del Astillero · Agua potable, alcantarillado, aguas lluvias y eléctrico</span>
+      <span class="shdr-badge reg">Redes</span>
+    </div>
+    <div style="border:0.5px solid #D9C5EE;border-top:none;margin-bottom:0.75rem">${_supSvg('red')}</div>
+    ${_supTabla('red', '', 'reg')}
+
+    <div style="font-size:11px;color:var(--color-text-tertiary);line-height:1.6">
+      El dibujo sigue el plano de la Etapa 1: el tramo mide ≈98 m y la calzada ≈6,7 m de ancho en el plano. Las cantidades y montos vienen del flujo (planilla), que considera 101 m × 7 m de calzada, 77 m × 1,2 m de vereda y 115 ml de soleras. Las redes se dibujan como líneas esquemáticas a lo largo del tramo, no con su trazado real.
+    </div>`;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -3023,6 +3189,7 @@ function showTab(id, btn){
   document.getElementById('panel-'+id).classList.add('active');
   btn.classList.add('active');
   if(id==='eerr') initEstadoResultados();
+  if(id==='superficies') initSuperficies();
   if(id==='registro') initRegistroPanel();
   if(id==='cotizaciones') initCotizacionesPanel();
   if(id==='ordencompra') initOCPanel();
@@ -3138,6 +3305,7 @@ function toggleMoneda(){
   updateHeaders();
   if(vistaConsolidado){ renderConsolidado(); } else { recalc(); }
   if(eerrDatos) renderEstadoResultados();
+  if(supDatos) renderSuperficies();
 }
 /* ---- SENSIBILIDAD: modal ---- */
 function _fmtSens(f){
