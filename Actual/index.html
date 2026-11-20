@@ -637,10 +637,10 @@ table.oc-doc-table tbody tr:nth-child(even){background:#fafbf8}
   <span class="shdr-badge cos">Costos</span>
 </div>
 <table class="ft cos" style="table-layout:fixed">
-  <colgroup><col style="width:26%"><col style="width:11%"><col style="width:11%"><col style="width:14%"><col style="width:14%"><col style="width:16%"><col style="width:8%"></colgroup>
+  <colgroup><col style="width:23%"><col style="width:8%"><col style="width:9%"><col style="width:11%"><col style="width:10%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:6%"></colgroup>
   <thead><tr>
     <th>Centro de costo / Ítem</th><th>Cantidad</th><th id="th-cos-unit">Unitario (UF)</th>
-    <th id="th-cos-total">Total UF</th>
+    <th id="th-cos-total">Total UF</th><th title="IVA 19 % o retención 15,25 % de honorarios; terreno exento">Impuesto</th><th>Total bruto</th>
     <th>Costo real</th>
     <th>Variación</th>
     <th></th>
@@ -1996,14 +1996,15 @@ function renderConsolidado(){
   var wrap=document.getElementById('consolidado-wrap');
   var totIng=consolidadoIngresos.reduce(function(a,e){return a+e.total;},0);
   var totGastosProyecto=gastosProyecto.reduce(function(a,g){return a+calcGastoProyecto(g);},0);
-  var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0)+totGastosProyecto;
+  var impC=_impConsolidado();
+  var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0)+totGastosProyecto+impC.etapas+impC.gp;
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
   var totMar=totIng-totCos;
 
   wrap.innerHTML = `
     <div class="metric-strip" style="margin-bottom:1.25rem">
       <div class="metric pos"><div class="metric-label">Ingresos totales</div><div class="metric-value">${fval(totIng)}</div></div>
-      <div class="metric neg"><div class="metric-label">Costos totales</div><div class="metric-value">${fval(totCos)}</div></div>
+      <div class="metric neg"><div class="metric-label">Costos totales (brutos)</div><div class="metric-value">${fval(totCos)}</div></div>
       <div class="metric ${totMar>=0?'pos':'neg'}"><div class="metric-label">Margen bruto</div><div class="metric-value">${fval(totMar)}</div><div class="metric-sub">${totIng>0?fpct(totMar/totIng*100):'—'} sobre ingresos</div></div>
       <div class="metric"><div class="metric-label">Etapas incluidas</div><div class="metric-value">${consolidadoIngresos.length}</div></div>
     </div>
@@ -2041,9 +2042,9 @@ function renderConsolidado(){
       <span class="shdr-badge cos">Costos</span>
     </div>
     <table class="ft cos">
-      <colgroup><col style="width:40%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup>
+      <colgroup><col style="width:32%"><col style="width:14%"><col style="width:12%"><col style="width:14%"><col style="width:14%"><col style="width:14%"></colgroup>
       <thead><tr>
-        <th style="text-align:left">Centro de costo</th><th>Total UF</th><th>Costo real</th><th>Variación</th>
+        <th style="text-align:left">Centro de costo</th><th>Total UF</th><th title="IVA 19 % o retención 15,25 % de honorarios; terreno exento">Impuesto</th><th>Total bruto</th><th>Costo real</th><th>Variación</th>
       </tr></thead>
       <tbody id="cons-cos-body"></tbody>
     </table>`;
@@ -2113,14 +2114,16 @@ function renderConsolidadoCostos(){
   var totCos=consolidadoCostos.reduce(function(a,c){return a+c.total;},0);
   var totReal=consolidadoCostos.reduce(function(a,c){return a+(c.real||0);},0);
   var html='';
+  var impC=_impConsolidado();
   if(consolidadoCostos.length===0){
-    html+='<tr><td colspan="4" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>';
+    html+='<tr><td colspan="6" style="text-align:center;color:var(--color-text-tertiary);padding:16px">Sin centros de costo cargados</td></tr>';
   } else {
     consolidadoCostos.forEach(function(c,ci){
+      var tc=_impuestoDe(c.nombre);
       html+=`<tr class="partida-row">
         <td><button class="toggle-btn" onclick="toggleConsCosCentro(${ci})">${c.expandido?'−':'+'}</button>
           <span class="tipo-badge ${c.cls||'tgen'}">${c.nombre}</span></td>
-        <td class="neg">${fval(c.total)}</td>
+        <td class="neg">${fval(c.total)}</td>${_celdasImp(c.total, _impMonto(c.total, tc))}
         <td style="text-align:center">${fReal(c.real)}</td>
         <td style="text-align:center">${fVar(c.total,c.real)}</td></tr>`;
       if(c.expandido){
@@ -2128,7 +2131,7 @@ function renderConsolidadoCostos(){
         // debajo, desplegable, el aporte de cada etapa.
         html+=_htmlDesgloseAgregado(c,ci);
         html+=`<tr class="subcentro-row">
-          <td colspan="4" style="padding-left:22px">
+          <td colspan="6" style="padding-left:22px">
             <button class="sub-toggle" onclick="toggleConsCosEtapas(${ci})">${c.etapasExpandido?'−':'+'}</button>
             <span style="font-size:11px;color:var(--color-text-secondary)">Desglose por etapa (${c.porEtapa.length} etapa${c.porEtapa.length===1?'':'s'})</span></td></tr>`;
         if(c.etapasExpandido) c.porEtapa.forEach(function(pe,pei){
@@ -2136,7 +2139,7 @@ function renderConsolidadoCostos(){
             <td style="padding-left:40px">
               <button class="sub-toggle" onclick="toggleConsCosEtapa(${ci},${pei})">${pe.expandido?'−':'+'}</button>
               <span class="tipo-badge tgen" style="font-size:10px">${pe.etapaNombre}</span></td>
-            <td class="neg">${fval(pe.total)}</td>
+            <td class="neg">${fval(pe.total)}</td>${_celdasImp(pe.total, _impMonto(pe.total, tc))}
             <td style="text-align:center">${fReal(pe.real)}</td>
             <td style="text-align:center">${fVar(pe.total,pe.real)}</td></tr>`;
           if(pe.expandido){
@@ -2148,14 +2151,14 @@ function renderConsolidadoCostos(){
                   <td style="padding-left:46px;color:var(--color-text-secondary)">
                     <button class="sub-toggle" onclick="toggleConsCosSub(${ci},${pei},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
                     ${sc.nombre}</td>
-                  <td class="neg">${fval(scTot)}</td><td></td><td></td></tr>`;
+                  <td class="neg">${fval(scTot)}</td>${_celdasImp(scTot, _impMonto(scTot, tc))}<td></td><td></td></tr>`;
                 if(sc.expandido){
                   (sc.items||[]).forEach(function(it){
                     var tot=calcItem(it);
                     html+=`<tr class="subitem-row">
                       <td style="padding-left:66px;color:var(--color-text-tertiary);font-size:11px">
                         ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''} × ${f1(it.unitario)} UF)</span></td>
-                      <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
+                      <td class="neg">${fval(tot)}</td>${_celdasImp(tot, _impMonto(tot, tc))}<td></td><td></td></tr>`;
                   });
                 }
               });
@@ -2164,7 +2167,7 @@ function renderConsolidadoCostos(){
                 var tot=calcItem(it);
                 html+=`<tr class="subitem-row">
                   <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${it.nombre}</td>
-                  <td class="neg">${fval(tot)}</td><td></td><td></td></tr>`;
+                  <td class="neg">${fval(tot)}</td>${_celdasImp(tot, _impMonto(tot, tc))}<td></td><td></td></tr>`;
               });
             }
           }
@@ -2172,7 +2175,7 @@ function renderConsolidadoCostos(){
       }
     });
   }
-  html+=`<tr class="total-row"><td>Total costos por etapa</td><td class="neg">${fval(totCos)}</td>
+  html+=`<tr class="total-row"><td>Total costos por etapa</td><td class="neg">${fval(totCos)}</td>${_celdasImp(totCos, impC.etapas)}
     <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
     <td style="text-align:center">${fVar(totCos,totReal)}</td></tr>`;
 
@@ -2181,12 +2184,12 @@ function renderConsolidadoCostos(){
   var totalGPReal=gastosProyecto.reduce(function(a,g){return a+(g.real||0);},0);
   html+=`<tr class="partida-row">
     <td><span class="tipo-badge tgen">Gastos de proyecto</span></td>
-    <td class="neg">${fval(totalGP)}</td>
+    <td class="neg">${fval(totalGP)}</td>${_celdasImp(totalGP, impC.gp)}
     <td style="text-align:center">${fReal(totalGPReal)}</td>
     <td style="text-align:center">${fVar(totalGP,totalGPReal)}</td></tr>`;
   {
     if(gastosProyecto.length===0){
-      html+='<tr class="subcentro-row"><td colspan="4" style="padding-left:22px;color:var(--color-text-tertiary)">Sin gastos de proyecto agregados</td></tr>';
+      html+='<tr class="subcentro-row"><td colspan="6" style="padding-left:22px;color:var(--color-text-tertiary)">Sin gastos de proyecto agregados</td></tr>';
     }
     var undOptsHTML=function(actual){
       return ['ML','M2','M3','GL','UN','N°','KG','HH'].map(function(u){return `<option${u===(actual||'UN')?' selected':''}>${u}</option>`;}).join('');
@@ -2199,7 +2202,7 @@ function renderConsolidadoCostos(){
           <input class="ci ni" value="${g.nombre}" style="width:110px;font-size:12px;background:var(--color-background-info);border-color:transparent;font-weight:500"
             data-minw="110" oninput="autoGrowNI(this)" onchange="editarNombreGastoProyecto(${gi},this.value)"/>
           <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(${_resumenProrrateoGasto(g, etapasOrdenadas, _m2PorEtapaCache)})</span></td>
-        <td class="neg">${fval(montoG)}</td>
+        <td class="neg">${fval(montoG)}</td>${_celdasImp(montoG, _impMonto(montoG, _impuestoDe('Gastos de Proyecto', g.nombre)))}
         <td style="text-align:center">${fReal(g.real||0)}</td>
         <td style="text-align:center">
           ${fVar(montoG,g.real||0)}
@@ -2209,7 +2212,7 @@ function renderConsolidadoCostos(){
         if(g.tieneSubcentros){
           g.subcentros.forEach(function(sc,si){
             var scTot=calcSubcentro(sc);
-            html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:46px">
+            html+=`<tr class="subitem-row"><td colspan="6" style="padding-left:46px">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:3px 0">
                 <button class="sub-toggle" onclick="toggleSubcentroGasto(${gi},${si})" style="width:16px;height:16px;font-size:10px">${sc.expandido?'−':'+'}</button>
                 <input class="ci ni" value="${sc.nombre}" style="width:100px;font-size:12px" data-minw="100" oninput="autoGrowNI(this)"
@@ -2220,7 +2223,7 @@ function renderConsolidadoCostos(){
             if(sc.expandido){
               sc.items.forEach(function(it,ii){
                 var tot=calcItem(it);
-                html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:66px">
+                html+=`<tr class="subitem-row"><td colspan="6" style="padding-left:66px">
                   <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
                     <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
                     <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
@@ -2235,18 +2238,18 @@ function renderConsolidadoCostos(){
                     <button class="icon-btn" onclick="delSubItemGasto(${gi},${si},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button>
                   </div></td></tr>`;
               });
-              html+=`<tr><td colspan="4" style="padding:2px 0 4px 66px">
+              html+=`<tr><td colspan="6" style="padding:2px 0 4px 66px">
                 <button class="add-btn cos-add" onclick="addSubItemGasto(${gi},${si})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
               </td></tr>`;
             }
           });
-          html+=`<tr><td colspan="4" style="padding:4px 0 6px 46px">
+          html+=`<tr><td colspan="6" style="padding:4px 0 6px 46px">
             <button class="add-btn cos-add" onclick="addSubcentroGasto(${gi})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar sub-costo</button>
           </td></tr>`;
         } else {
           (g.items||[]).forEach(function(it,ii){
             var tot=calcItem(it);
-            html+=`<tr class="subitem-row"><td colspan="4" style="padding-left:46px">
+            html+=`<tr class="subitem-row"><td colspan="6" style="padding-left:46px">
               <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0">
                 <i class="ti ti-corner-down-right" style="font-size:10px;color:var(--color-text-tertiary)"></i>
                 <input class="ci ni" value="${it.nombre}" style="width:100px" data-minw="100" oninput="autoGrowNI(this)"
@@ -2261,34 +2264,34 @@ function renderConsolidadoCostos(){
                 <button class="icon-btn" onclick="delItemGasto(${gi},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button>
               </div></td></tr>`;
           });
-          html+=`<tr><td colspan="4" style="padding:2px 0 6px 46px">
+          html+=`<tr><td colspan="6" style="padding:2px 0 6px 46px">
             <button class="add-btn cos-add" onclick="addItemGasto(${gi})"><i class="ti ti-plus" style="font-size:11px"></i> Agregar ítem</button>
           </td></tr>`;
         }
 
         if(g.tipoProrrateo==='proyecto'){
-          html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:11px;color:var(--color-text-tertiary)">No se prorratea a ninguna etapa — queda registrado solo acá, en Flujo de Proyecto.</td></tr>`;
+          html+=`<tr><td colspan="6" style="padding:6px 0 2px 46px;font-size:11px;color:var(--color-text-tertiary)">No se prorratea a ninguna etapa — queda registrado solo acá, en Flujo de Proyecto.</td></tr>`;
         } else {
           var asign=_asignacionGastoProyecto(g, etapasOrdenadas, _m2PorEtapaCache);
-          html+=`<tr><td colspan="4" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
+          html+=`<tr><td colspan="6" style="padding:6px 0 2px 46px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Prorrateo por etapa</td></tr>`;
           etapasOrdenadas.forEach(function(e){
             var monto=asign[e.id]||0;
             if(monto<=0.0001) return;
             var pct=_pctAsignacionGastoProyecto(g, etapasOrdenadas, e.id, _m2PorEtapaCache);
             html+=`<tr class="subitem-row">
               <td style="padding-left:46px;color:var(--color-text-tertiary);font-size:11px">${e.nombre} <span class="muted">(${f1(pct)}% de incidencia)</span></td>
-              <td class="neg">${fval(monto)}</td><td></td><td></td></tr>`;
+              <td class="neg">${fval(monto)}</td>${_celdasImp(monto, _impMonto(monto, _impuestoDe('Gastos de Proyecto', g.nombre)))}<td></td><td></td></tr>`;
           });
         }
       }
     });
   }
-  html+=`<tr><td colspan="4" style="padding:10px 4px 4px 22px">
+  html+=`<tr><td colspan="6" style="padding:10px 4px 4px 22px">
     <button class="btn-primary" style="height:28px;padding:0 10px;font-size:11px" onclick="abrirModalGastoProyecto()"><i class="ti ti-plus" style="font-size:11px"></i> Agregar gasto de proyecto</button>
     <button class="add-btn" style="height:28px;padding:0 10px;font-size:11px;margin-left:6px" onclick="abrirModalProrratearGastos()"><i class="ti ti-adjustments-horizontal" style="font-size:11px"></i> Prorratear gastos</button>
   </td></tr>`;
 
-  html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td>
+  html+=`<tr class="total-row"><td>Total Partida 2</td><td class="neg">${fval(totCos+totalGP)}</td>${_celdasImp(totCos+totalGP, impC.etapas+impC.gp)}
     <td style="text-align:center;font-weight:500">${fReal(totReal+totalGPReal)}</td>
     <td style="text-align:center">${fVar(totCos+totalGP,totReal+totalGPReal)}</td></tr>`;
 
@@ -2361,23 +2364,24 @@ function _agregarDesgloseCentro(c){
   });
   return {subcentros:subcentros, items:ordenItems.map(function(k){return items[k];})};
 }
-function _htmlItemAgregado(it, pad){
+function _htmlItemAgregado(it, pad, tc){
   var prom=it.cantidad>0?it.total/it.cantidad:0;
   return `<tr class="subitem-row">
     <td style="padding-left:${pad}px;color:var(--color-text-tertiary);font-size:11px">
       ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''}${it.cantidad>0?' × '+f1(prom)+' UF':''})</span></td>
-    <td class="neg">${fval(it.total)}</td><td></td><td></td></tr>`;
+    <td class="neg">${fval(it.total)}</td>${_celdasImp(it.total, _impMonto(it.total, tc))}<td></td><td></td></tr>`;
 }
 function _htmlDesgloseAgregado(c, ci){
   var agg=_agregarDesgloseCentro(c);
   var exp=c.aggExp||{};
-  var html=`<tr class="subitem-row"><td colspan="4" style="padding:6px 0 2px 22px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Total proyecto · suma de las etapas</td></tr>`;
+  var tc=_impuestoDe(c.nombre);
+  var html=`<tr class="subitem-row"><td colspan="6" style="padding:6px 0 2px 22px;font-size:10px;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:.03em">Total proyecto · suma de las etapas</td></tr>`;
   agg.subcentros.forEach(function(s){
     html+=`<tr class="subcentro-row">
       <td style="padding-left:22px">
         <button class="sub-toggle" onclick="toggleConsCosAgg(${ci},'${s.clave.replace(/'/g,"\\'")}')">${exp[s.clave]?'−':'+'}</button>
         ${s.nombre||'(sin nombre)'}</td>
-      <td class="neg">${fval(s.total)}</td><td></td><td></td></tr>`;
+      <td class="neg">${fval(s.total)}</td>${_celdasImp(s.total, _impMonto(s.total, tc))}<td></td><td></td></tr>`;
     if(exp[s.clave]){
       if(s.grupos && s.grupos.length){
         s.grupos.forEach(function(g){
@@ -2385,13 +2389,13 @@ function _htmlDesgloseAgregado(c, ci){
             <td style="padding-left:46px;color:var(--color-text-secondary)">
               <button class="sub-toggle" onclick="toggleConsCosAgg(${ci},'${g.clave.replace(/'/g,"\\'")}')" style="width:16px;height:16px;font-size:10px">${exp[g.clave]?'−':'+'}</button>
               ${g.nombre}</td>
-            <td class="neg">${fval(g.total)}</td><td></td><td></td></tr>`;
-          if(exp[g.clave]) g.items.forEach(function(it){ html+=_htmlItemAgregado(it, 66); });
+            <td class="neg">${fval(g.total)}</td>${_celdasImp(g.total, _impMonto(g.total, tc))}<td></td><td></td></tr>`;
+          if(exp[g.clave]) g.items.forEach(function(it){ html+=_htmlItemAgregado(it, 66, tc); });
         });
-      } else s.items.forEach(function(it){ html+=_htmlItemAgregado(it, 46); });
+      } else s.items.forEach(function(it){ html+=_htmlItemAgregado(it, 46, tc); });
     }
   });
-  agg.items.forEach(function(it){ html+=_htmlItemAgregado(it, 22); });
+  agg.items.forEach(function(it){ html+=_htmlItemAgregado(it, 22, tc); });
   return html;
 }
 function toggleConsCosEtapa(ci,pei){
@@ -3249,6 +3253,39 @@ function _calcCentroBase(c){
   }
   return c.items.reduce((a,it)=>a+calcItem(it),0);
 }
+/* ---- IMPUESTOS DE PARTIDA 2 ----
+   Los costos se ingresan netos. Columna "Impuesto": IVA 19 % para lo que
+   se paga con factura; retención 15,25 % para las boletas de honorarios
+   (gastos de proyecto de arquitectura, ingeniería y marketing); terreno e
+   intereses exentos. El centro "Iva Venta" ya es impuesto (débito − crédito)
+   y no lleva columna. Total bruto = neto + impuesto. */
+const TASA_IVA = 0.19, TASA_RETENCION_HONORARIOS = 0.1525;
+function _impuestoDe(centro, sub){
+  var k=_claveCentro(centro);
+  if(k==='iva venta') return null;
+  if(k==='terreno' || k==='costo financiero') return {tasa:0, tipo:'Exento'};
+  if(k==='gastos de proyecto') return /arquitect|ingenier|marketing/i.test(sub||'') ? {tasa:TASA_RETENCION_HONORARIOS, tipo:'Retención'} : {tasa:TASA_IVA, tipo:'IVA'};
+  return {tasa:TASA_IVA, tipo:'IVA'};
+}
+function _impMonto(neto, t){ return t ? neto*t.tasa : null; }
+function impuestoCentro(c){
+  if(c.nombre==='Gastos de Proyecto') return _sinSensCostos(function(){
+    return (c.subcentros||[]).reduce(function(a,sc){ return a+(_impMonto(calcSubcentro(sc), _impuestoDe(c.nombre, sc.nombre))||0); },0);
+  });
+  return _impMonto(calcCentro(c), _impuestoDe(c.nombre));
+}
+function totImpUF(){ return centros.reduce(function(a,c){ return a+(impuestoCentro(c)||0); },0); }
+function totCosBrutoUF(){ return totCosUF()+totImpUF(); }
+function _impConsolidado(){
+  return {
+    etapas: consolidadoCostos.reduce(function(a,c){ return a+(_impMonto(c.total, _impuestoDe(c.nombre))||0); },0),
+    gp: gastosProyecto.reduce(function(a,g){ return a+(_impMonto(calcGastoProyecto(g), _impuestoDe('Gastos de Proyecto', g.nombre))||0); },0)
+  };
+}
+// Celdas "Impuesto" y "Total bruto"
+function _celdasImp(neto, imp){
+  return '<td class="muted">'+(imp==null?'—':fval(imp))+'</td><td class="neg">'+fval(neto+(imp||0))+'</td>';
+}
 function calcSubcentro(sc){return sc.items.reduce((a,it)=>a+calcItem(it),0)}
 function subClsBadge(nombre){
   const n=nombre.toLowerCase();
@@ -3968,8 +4005,8 @@ function fVar(presup, real){
 /* ---- BUILD COS ---- */
 function _buildCos(){
   const tb=document.getElementById('cos-body');tb.innerHTML='';
-  // 7 columnas: nombre | cantidad | unitario | totalUF | costoReal | variacion | acciones
-  const COLS=7;
+  // 9 columnas: nombre | cantidad | unitario | totalUF | impuesto | totalBruto | costoReal | variacion | acciones
+  const COLS=9;
   centros.forEach((c,ci)=>{
     const exp=c.expandido;
     const totUF=calcCentro(c);
@@ -3988,7 +4025,7 @@ function _buildCos(){
             <span style="font-size:10px;color:var(--color-text-tertiary);margin-left:6px">(prorrateado desde Flujo de Proyecto)</span></td>
         <td class="muted">—</td>
         <td class="muted">—</td>
-        <td class="neg">${fval(totUF)}</td>
+        <td class="neg">${fval(totUF)}</td>${_celdasImp(totUF, impuestoCentro(c))}
         <td style="text-align:center">${fReal(real)}</td>
         <td style="text-align:center">${fVar(totUF,real)}</td>
         <td></td>`;
@@ -4003,7 +4040,7 @@ function _buildCos(){
               <button class="sub-toggle" onclick="toggleGastoProyectoSubEtapa(${ci},${si})">${scExp?'−':'+'}</button>
               <span style="color:var(--color-text-secondary);font-size:12px;font-weight:500">${sc.nombre}</span></td>
           <td class="muted">—</td><td class="muted">—</td>
-          <td class="neg">${fval(scTot)}</td><td></td><td></td><td></td>`;
+          <td class="neg">${fval(scTot)}</td>${_celdasImp(scTot, _impMonto(scTot, _impuestoDe(c.nombre, sc.nombre)))}<td></td><td></td><td></td>`;
         tb.appendChild(scr);
         sc.items.forEach(function(it){
           const tot=_sinSensCostos(function(){return calcItem(it);});
@@ -4014,7 +4051,7 @@ function _buildCos(){
                 <i class="ti ti-corner-down-right" style="font-size:10px;margin-right:3px"></i>
                 ${it.nombre} <span class="muted">(${f1(it.cantidad)} ${it.und||''} × ${f1(it.unitario)} UF)</span></td>
             <td></td><td></td>
-            <td class="neg">${fval(tot)}</td><td></td><td></td><td></td>`;
+            <td class="neg">${fval(tot)}</td>${_celdasImp(tot, _impMonto(tot, _impuestoDe(c.nombre, sc.nombre)))}<td></td><td></td><td></td>`;
           tb.appendChild(itr);
         });
       });
@@ -4025,7 +4062,7 @@ function _buildCos(){
           <input class="ci ni" value="${c.nombre}" style="width:110px;font-weight:500;background:var(--color-background-secondary);border-color:transparent" data-minw="110" oninput="autoGrowNI(this)" onchange="centros[${ci}].nombre=this.value;snap();recalc()"/></td>
       <td class="muted">${exp?'—':f1(totCant)}</td>
       <td class="muted">${exp?'—':funit(unitProm)}</td>
-      <td class="neg">${fval(totUF)}</td>
+      <td class="neg">${fval(totUF)}</td>${_celdasImp(totUF, impuestoCentro(c))}
       <td style="text-align:center">${fReal(real)}</td>
       <td style="text-align:center">${fVar(totUF,real)}</td>
       <td style="text-align:right"><button class="icon-btn" onclick="delCentro(${ci})" title="Eliminar centro"><i class="ti ti-trash" style="font-size:12px"></i></button></td>`;
@@ -4045,7 +4082,7 @@ function _buildCos(){
                 data-minw="110" oninput="autoGrowNI(this)" onchange="centros[${ci}].subcentros[${si}].nombre=this.value;recalc()"/></td>
             <td class="muted">${scExp?'—':sc.items.reduce((a,it)=>a+it.cantidad,0).toFixed(1)}</td>
             <td class="muted">—</td>
-            <td class="neg">${fval(scTot)}</td>
+            <td class="neg">${fval(scTot)}</td>${_celdasImp(scTot, _impMonto(scTot, _impuestoDe(c.nombre)))}
             <td style="text-align:center">${fReal(scReal)}</td>
             <td style="text-align:center">${fVar(scTot,scReal)}</td>
             <td style="text-align:right"><button class="sub-del-btn" onclick="delSubcentro(${ci},${si})" title="Eliminar subpartida"><i class="ti ti-trash" style="font-size:11px"></i></button></td>`;
@@ -4067,7 +4104,7 @@ function _buildCos(){
               <td><input class="ci" type="number" min="0" step="0.01" value="${it.cantidad}" style="width:72px"
                 onchange="centros[${ci}].subcentros[${si}].items[${ii}].cantidad=+this.value||0;snap();recalc()"/></td>
               <td>${modoClp?`<span style="font-size:12px;color:var(--color-text-secondary)">${fclp(it.unitario*getUF())}</span>`:`<input class="ci" type="number" min="0" step="0.0001" value="${it.unitario}" style="width:68px" onchange="centros[${ci}].subcentros[${si}].items[${ii}].unitario=+this.value||0;snap();recalc()"/>`}</td>
-              <td class="neg">${fval(tot)}</td>
+              <td class="neg">${fval(tot)}</td>${_celdasImp(tot, _impMonto(tot, _impuestoDe(c.nombre)))}
               <td style="text-align:center">${fReal(itemReal)}</td>
               <td style="text-align:center">${fVar(tot,itemReal)}</td>
               <td style="text-align:right"><button class="icon-btn" onclick="delSubItem(${ci},${si},${ii})" title="Eliminar"><i class="ti ti-x" style="font-size:12px"></i></button></td>`;
@@ -4106,7 +4143,7 @@ function _buildCos(){
               ${it.nombre}</td>
           <td class="muted">${f1(it.cantidad)}</td>
           <td class="muted">${funit(it.unitario)}</td>
-          <td class="neg">${fval(tot)}</td>
+          <td class="neg">${fval(tot)}</td>${_celdasImp(tot, _impMonto(tot, _impuestoDe(c.nombre)))}
           <td style="text-align:center">${fReal(itemReal)}</td>
           <td style="text-align:center">${fVar(tot,itemReal)}</td>
           <td></td>`;
@@ -4124,7 +4161,7 @@ function _buildCos(){
   const ttr=document.createElement('tr');ttr.className='total-row';
   ttr.innerHTML=`
     <td colspan="3">Total costos</td>
-    <td class="neg">${fval(totPresup)}</td>
+    <td class="neg">${fval(totPresup)}</td>${_celdasImp(totPresup, totImpUF())}
     <td style="text-align:center;font-weight:500">${fReal(totReal)}</td>
     <td style="text-align:center">${fVar(totPresup,totReal)}</td>
     <td></td>`;
@@ -4135,7 +4172,7 @@ function _buildCos(){
 /* ---- BUILD RES ---- */
 function _buildRes(){
   const tb=document.getElementById('res-body');tb.innerHTML='';
-  const ing=totIngUF();const cos=totCosUF();const mar=ing-cos;
+  const ing=totIngUF();const cos=totCosBrutoUF();const mar=ing-cos;
   [{label:'Ingresos — venta de lotes',uf:ing,cls:'pos'},
    {label:'Costos — etapa 1',uf:-cos,cls:'neg'},
    {label:'Margen bruto etapa 1',uf:mar,cls:mar>=0?'pos':'neg',bold:true}
@@ -4150,17 +4187,17 @@ function _buildRes(){
 }
 
 function _buildMetrics(){
-  const ing=totIngUF();const cos=totCosUF();const mar=ing-cos;
+  const ing=totIngUF();const cos=totCosBrutoUF();const mar=ing-cos;
   const pct=ing>0?mar/ing*100:0;
   document.getElementById('metric-strip').innerHTML=`
     <div class="metric pos"><div class="metric-label">Ingresos totales</div><div class="metric-value">${fval(ing)}</div></div>
-    <div class="metric neg"><div class="metric-label">Costos totales</div><div class="metric-value">${fval(cos)}</div></div>
+    <div class="metric neg"><div class="metric-label">Costos totales (brutos)</div><div class="metric-value">${fval(cos)}</div></div>
     <div class="metric ${mar>=0?'pos':'neg'}"><div class="metric-label">Margen bruto</div><div class="metric-value">${fval(mar)}</div><div class="metric-sub">${fpct(pct)} sobre ingresos</div></div>
     <div class="metric"><div class="metric-label">Total lotes</div><div class="metric-value">${lotes.reduce((a,l)=>a+l.unidades,0)}</div><div class="metric-sub">${f1(lotes.reduce((a,l)=>a+l.unidades*l.m2,0))} m²</div></div>`;
 }
 
 function _buildChart(){
-  const ing=totIngUF();const cos=totCosUF();const mar=ing-cos;
+  const ing=totIngUF();const cos=totCosBrutoUF();const mar=ing-cos;
   const mult=modoClp?getUF():1;
   if(flujoChart)flujoChart.destroy();
   flujoChart=new Chart(document.getElementById('flujoChart'),{
