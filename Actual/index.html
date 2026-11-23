@@ -1990,6 +1990,7 @@ async function mostrarConsolidado(){
     consolidadoIngresos.push({etapaId:e.id, etapaNombre:e.nombre, lotes:lotesE, total:totE, expandido:false});
   }
 
+  await _cargarApalCentros();
   renderConsolidado();
 }
 
@@ -2065,9 +2066,44 @@ function renderConsolidado(){
      costos netos) × TASA_IMPUESTO_RENTA, repartido por etapa.
    · Flujo neto = flujo de proyecto − impuesto a la renta.
    · Apalancamiento: lo que se pide al banco por etapa, con IVA, para
-     los centros de CENTROS_APALANCAMIENTO.
+     los centros elegidos con el selector del cuadro (apalCentros).
+     La elección se guarda en loteo_config (supabase/20_config.sql);
+     si esa tabla aún no existe, queda en el navegador (localStorage).
    ═══════════════════════════════════════════════════════════════ */
 const CENTROS_APALANCAMIENTO = ['urbanizacion condominio','urbanizacion calle publica','imiv','imprevistos','gastos comunes','areas verdes'];
+const CLAVE_GP_APAL = 'gastos de proyecto';
+const APAL_CONFIG = 'apalancamiento_centros';
+let apalCentros = null;      // claves (_claveCentro) en el orden en que se muestran
+let apalEnNube = false;      // true si se pudo leer/guardar en loteo_config
+
+async function _cargarApalCentros(){
+  if(apalCentros) return;
+  var r=await sb.from('loteo_config').select('valor').eq('clave', APAL_CONFIG).maybeSingle();
+  if(!r.error){
+    apalEnNube=true;
+    if(r.data && Array.isArray(r.data.valor)){ apalCentros=r.data.valor; return; }
+  }
+  try{ var loc=JSON.parse(localStorage.getItem('guanaqueros_'+APAL_CONFIG)||'null'); if(Array.isArray(loc)){ apalCentros=loc; return; } }catch(e){}
+  apalCentros=CENTROS_APALANCAMIENTO.slice();
+}
+async function _guardarApalCentros(){
+  try{ localStorage.setItem('guanaqueros_'+APAL_CONFIG, JSON.stringify(apalCentros)); }catch(e){}
+  var r=await sb.from('loteo_config').upsert({clave:APAL_CONFIG, valor:apalCentros, actualizado_en:new Date().toISOString()});
+  apalEnNube=!r.error;
+}
+async function agregarCentroApal(clave){
+  if(!clave || apalCentros.indexOf(clave)>=0) return;
+  apalCentros.push(clave);
+  renderConsolidadoFlujo();
+  await _guardarApalCentros();
+  renderConsolidadoFlujo();
+}
+async function quitarCentroApal(clave){
+  apalCentros=apalCentros.filter(function(k){return k!==clave;});
+  renderConsolidadoFlujo();
+  await _guardarApalCentros();
+  renderConsolidadoFlujo();
+}
 
 function _calcFlujoConsolidado(){
   var etapasOrd=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
@@ -2081,15 +2117,21 @@ function _calcFlujoConsolidado(){
         var imp=_impMonto(pe.total, tc)||0;
         bruto+=pe.total+imp;
         if(k==='iva venta') debito+=_ivaDebitoDeCentro(pe.centro); else neto+=pe.total;
-        if(CENTROS_APALANCAMIENTO.indexOf(k)>=0){
+        if((apalCentros||CENTROS_APALANCAMIENTO).indexOf(k)>=0){
           apal[k]=apal[k]||{nombre:c.nombre, neto:0, bruto:0};
           apal[k].neto+=pe.total; apal[k].bruto+=pe.total+imp;
         }
       });
     });
+    var conGP=(apalCentros||CENTROS_APALANCAMIENTO).indexOf(CLAVE_GP_APAL)>=0;
     gastosProyecto.forEach(function(g){
       var m=_asignacionGastoProyecto(g, etapasOrd, _m2PorEtapaCache)[e.id]||0;
-      bruto+=m+(_impMonto(m, _impuestoDe('Gastos de Proyecto', g.nombre))||0); neto+=m;
+      var imp=_impMonto(m, _impuestoDe('Gastos de Proyecto', g.nombre))||0;
+      bruto+=m+imp; neto+=m;
+      if(conGP){
+        apal[CLAVE_GP_APAL]=apal[CLAVE_GP_APAL]||{nombre:'Gastos de proyecto', neto:0, bruto:0};
+        apal[CLAVE_GP_APAL].neto+=m; apal[CLAVE_GP_APAL].bruto+=m+imp;
+      }
     });
     return {id:e.id, nombre:String(e.nombre).split('·')[0].trim(), ing:ing, bruto:bruto, flujo:ing-bruto, rai:ing-debito-neto, apal:apal};
   });
@@ -2119,9 +2161,27 @@ function renderConsolidadoFlujo(){
     signo=signo||'';
     return '<tr'+(cls?' class="'+cls+'"':'')+'><td>'+txt+'</td>'+cols.map(function(c){return '<td>'+signo+fval(fn(c))+'</td>';}).join('')+'<td style="font-weight:500">'+signo+fval(totV)+'</td></tr>';
   };
-  // Apalancamiento: un renglón por centro, en el orden de CENTROS_APALANCAMIENTO
-  var claves=CENTROS_APALANCAMIENTO.filter(function(k){ return cols.some(function(c){return c.apal[k];}); });
+  // Apalancamiento: un renglón por centro elegido, en el orden en que se agregaron
+  var elegidos=apalCentros||CENTROS_APALANCAMIENTO;
+  var claves=elegidos.filter(function(k){ return cols.some(function(c){return c.apal[k];}); });
   var nom=function(k){ var c=cols.find(function(x){return x.apal[k];}); return c.apal[k].nombre; };
+  var nomCentro=function(k){
+    if(k===CLAVE_GP_APAL) return 'Gastos de proyecto';
+    var c=consolidadoCostos.find(function(x){return _claveCentro(x.nombre)===k;});
+    return c ? c.nombre : k;
+  };
+  var esc=function(t){ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); };
+  // Selector: centros de Partida 2 que se muestran en el Flujo de Proyecto (salvo Iva Venta) + gastos de proyecto
+  var disponibles=consolidadoCostos.map(function(c){return _claveCentro(c.nombre);}).filter(function(k){return k!=='iva venta';});
+  if(gastosProyecto.length) disponibles.push(CLAVE_GP_APAL);
+  disponibles=disponibles.filter(function(k,i,a){ return a.indexOf(k)===i && elegidos.indexOf(k)<0; });
+  var chips=elegidos.filter(function(k){ return k===CLAVE_GP_APAL || consolidadoCostos.some(function(c){return _claveCentro(c.nombre)===k;}); }).map(function(k){
+    return `<span style="display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 4px 0 10px;border-radius:99px;background:#E6F1FB;color:#0C447C;font-size:11px;font-weight:500">${esc(nomCentro(k))}<button class="icon-btn" style="width:18px;height:18px" title="Quitar del apalancamiento" onclick="quitarCentroApal('${esc(k)}')"><i class="ti ti-x" style="font-size:11px"></i></button></span>`;
+  }).join('');
+  var selector=`<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border:0.5px solid #B5D4F4;border-top:none;border-bottom:none;background:#fff">
+      <span style="font-size:11px;color:var(--color-text-secondary)">Centros incluidos:</span>${chips||'<span style="font-size:11px;color:var(--color-text-tertiary)">ninguno</span>'}
+      ${disponibles.length?`<select class="ci" style="height:26px;font-size:11px;margin-left:auto" onchange="agregarCentroApal(this.value)"><option value="">+ Agregar centro…</option>${disponibles.map(function(k){return '<option value="'+esc(k)+'">'+esc(nomCentro(k))+'</option>';}).join('')}</select>`:''}
+    </div>`;
   var apBruto=function(c){ return claves.reduce(function(a,k){return a+(c.apal[k]?c.apal[k].bruto:0);},0); };
   var apNeto=function(c){ return claves.reduce(function(a,k){return a+(c.apal[k]?c.apal[k].neto:0);},0); };
   var sumC=function(fn){ return cols.reduce(function(a,c){return a+fn(c);},0); };
@@ -2145,13 +2205,15 @@ function renderConsolidadoFlujo(){
       <span class="shdr-title ing">Apalancamiento bancario · Monto a solicitar al banco por etapa</span>
       <span class="shdr-badge ing">Con IVA</span>
     </div>
+    ${selector}
     <table class="ft ing">${colg}${cab}<tbody>
       ${claves.map(function(k){ return fila(nom(k), function(c){return c.apal[k]?c.apal[k].bruto:0;}, sumC(function(c){return c.apal[k]?c.apal[k].bruto:0;})); }).join('')}
       ${fila('Monto a solicitar al banco', apBruto, sumC(apBruto), 'total-row')}
       ${fila('De lo cual IVA (se recupera con el IVA débito de las ventas)', function(c){return apBruto(c)-apNeto(c);}, sumC(function(c){return apBruto(c)-apNeto(c);}))}
     </tbody></table>
     <div style="font-size:11px;color:var(--color-text-tertiary);line-height:1.6;margin-top:-0.5rem;margin-bottom:1.25rem">
-      Montos con IVA (19 %), porque las obras se pagan con factura. El monto de cada etapa se usa durante su obra; el IVA pagado vuelve como crédito fiscal contra el IVA de las ventas.
+      Montos con impuesto (IVA 19 %; retención 15,25 % en honorarios), porque así se pagan. El monto de cada etapa se usa durante su obra; el IVA pagado vuelve como crédito fiscal contra el IVA de las ventas.
+      ${apalEnNube?'':'<br><span style="color:#C47A0E">La selección de centros se guarda solo en este navegador hasta crear la tabla de configuración (supabase/20_config.sql).</span>'}
     </div>`;
 }
 
