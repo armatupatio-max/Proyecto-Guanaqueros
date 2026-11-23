@@ -1699,10 +1699,10 @@ const SUP_ITEMS = [
   {k:'soleras', grupo:'pav', re:/solera/i, color:'#D7263D', nombre:'Soleras tipo A'},
   {k:'vereda', grupo:'pav', re:/vereda/i, no:/base/i, color:'#E8902A', nombre:'Vereda de hormigón'},
   {k:'baseVereda', grupo:'pav', re:/base.*vereda/i, color:'#E8902A', nombre:'Base estabilizada vereda'},
-  {k:'agua', grupo:'red', sub:/agua potable/i, color:'#00A3CC', nombre:'Matriz de agua potable'},
-  {k:'alcantarillado', grupo:'red', sub:/alcantarillado/i, color:'#8B5A2B', nombre:'Colector de alcantarillado'},
-  {k:'lluvias', grupo:'red', sub:/aguas lluvias/i, color:'#1F9D74', nombre:'Aguas lluvias'},
-  {k:'electrico', grupo:'red', sub:/el[eé]ctric/i, color:'#C99A00', nombre:'Red eléctrica y alumbrado'}
+  {k:'agua', grupo:'red', re:/agua potable/i, color:'#00A3CC', nombre:'Matriz de agua potable'},
+  {k:'alcantarillado', grupo:'red', re:/alcantarillado/i, color:'#8B5A2B', nombre:'Colector de alcantarillado'},
+  {k:'lluvias', grupo:'red', re:/aguas lluvias/i, color:'#1F9D74', nombre:'Aguas lluvias'},
+  {k:'electrico', grupo:'red', re:/el[eé]ctric/i, color:'#C99A00', nombre:'Red eléctrica y alumbrado'}
 ];
 let supDatos = null;
 
@@ -1712,14 +1712,15 @@ async function initSuperficies(){
   var primera=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);})[0];
   var res=await sb.from('loteo_centros').select('*').eq('etapa_id', primera.id);
   if(res.error){ wrap.innerHTML='<div style="padding:24px;text-align:center;color:#A32D2D">No se pudieron leer los datos: '+res.error.message+'</div>'; return; }
-  var urb=(res.data||[]).map(_mapCentroRow).find(function(c){ return _claveCentro(c.nombre)==='urbanizacion'; });
-  var subs=(urb&&urb.subcentros||[]).filter(function(sc){ return /astillero/i.test(sc.nombre||''); });
+  var cs=(res.data||[]).map(_mapCentroRow);
+  var cp=cs.find(function(c){ return _claveCentro(c.nombre)==='urbanizacion calle publica'; });
+  var urb=cs.find(function(c){ return _claveCentro(c.nombre)==='urbanizacion'; });
+  var subs=cp ? (cp.subcentros||[]) : (urb&&urb.subcentros||[]).filter(function(sc){ return /astillero/i.test(sc.nombre||''); });
   var porClave={}, filas=[];
   subs.forEach(function(sc){
     (sc.items||[]).forEach(function(it){
       var total=(Number(it.cantidad)||0)*(Number(it.unitario)||0);
       var def=SUP_ITEMS.find(function(d){
-        if(d.sub) return d.sub.test(sc.nombre) && !/utilidad/i.test(it.nombre);
         return d.re.test(it.nombre) && !(d.no && d.no.test(it.nombre)) && !/utilidad/i.test(it.nombre);
       });
       var fila={sub:sc.nombre, nombre:it.nombre, und:it.und, cantidad:Number(it.cantidad)||0, unitario:Number(it.unitario)||0, total:total, def:def, grupo:def?def.grupo:(/pavimentaci/i.test(sc.nombre)?'pav':'red')};
@@ -1800,7 +1801,7 @@ function renderSuperficies(){
   var wrap=document.getElementById('sup-wrap');
   if(!supDatos) return;
   if(!supDatos.filas.length){
-    wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">No hay ítems de Av. del Astillero en el centro Urbanización de '+supDatos.etapa+'.</div>';
+    wrap.innerHTML='<div style="padding:24px;text-align:center;color:var(--color-text-tertiary)">No hay ítems de Av. del Astillero (centro Urbanización Calle Pública) en '+supDatos.etapa+'.</div>';
     return;
   }
   var totPav=supDatos.filas.filter(function(f){return f.grupo==='pav';}).reduce(function(a,f){return a+f.total;},0);
@@ -3486,7 +3487,7 @@ function _impParsearEtapa(g){
       r2++;
     }
     if(!res.bloques.length) avisos.push('Bajo "URBANIZACION" no se encontró ningún bloque con encabezado ITEM');
-  } else avisos.push('No se encontró "URBANIZACION"');
+  } else if(!po) avisos.push('No se encontró "URBANIZACION"'); // sin bloques: la urbanización viene en OTROS COSTOS
   return res;
 }
 // Tabla con encabezado CENTRO | SUBCOSTO | ITEM | UN | CANTIDAD | UNITARIO en la fila rh (desde la columna c0)
@@ -3525,7 +3526,7 @@ function _impAgruparCentros(filas){
   });
   return orden.map(function(k){return mapa[k];});
 }
-var _IMP_CLS={'areas verdes':'tproy','derechos':'tder','administracion':'tadm','costo financiero':'tfin','imprevistos':'timp','gastos comunes':'tgc'};
+var _IMP_CLS={'urbanizacion condominio':'turb','urbanizacion calle publica':'turb','imiv':'turb','areas verdes':'tproy','derechos':'tder','administracion':'tadm','costo financiero':'tfin','imprevistos':'timp','gastos comunes':'tgc'};
 // Títulos en MAYÚSCULAS se pasan a tipo oración; si ya vienen escritos con minúsculas se respetan
 function _impTituloBonito(s){ s=String(s).trim(); if(s!==s.toUpperCase()) return s; s=s.toLowerCase(); return s.charAt(0).toUpperCase()+s.slice(1); }
 // Arma lotes y centros nuevos de la etapa a partir de lo que tenía + la planilla
@@ -3584,12 +3585,24 @@ function _impConstruirEtapa(numEtapa, lotesAnt, centrosAnt, P, undGlobal){
   if(P.otros && P.otros.length){
     _impAgruparCentros(P.otros).forEach(function(G){
       var C=centros.find(function(c){return _claveCentro(c.nombre)===_claveCentro(G.nombre);});
-      if(!C){ C={nombre:G.nombre, cls:_IMP_CLS[_claveCentro(G.nombre)]||'tadm', tieneSubcentros:true, subcentros:[], items:[]}; centros.push(C); }
+      if(!C){
+        C={nombre:G.nombre, cls:_IMP_CLS[_claveCentro(G.nombre)]||'tadm', tieneSubcentros:true, subcentros:[], items:[]};
+        // Los centros de urbanización (y el IMIV) van justo después de Terreno y de los de urbanización ya puestos
+        if(_claveCentro(G.nombre).indexOf('urbanizacion')===0 || _claveCentro(G.nombre)==='imiv'){
+          var pos=centros.findIndex(function(c){return _claveCentro(c.nombre)==='terreno';})+1;
+          while(pos<centros.length && _claveCentro(centros[pos].nombre).indexOf('urbanizacion ')===0) pos++;
+          centros.splice(pos,0,C);
+        } else centros.push(C);
+      }
       C.tieneSubcentros=true; C.items=[];
       C.subcentros=G.subcentros.map(function(s){ return {nombre:s.nombre, items:s.items}; });
     });
   }
   var otrosNombres=P.otros&&P.otros.length?_impAgruparCentros(P.otros).map(function(G){return _claveCentro(G.nombre);}):[];
+  // Si la planilla ya no trae bloques URBANIZACION y define sus propios centros de urbanización
+  // (p. ej. "Urbanización Condominio" y "Urbanización Calle Pública"), el centro antiguo se quita.
+  if(!P.bloques.length && otrosNombres.some(function(k){return k.indexOf('urbanizacion ')===0;}))
+    centros=centros.filter(function(c){return _claveCentro(c.nombre)!=='urbanizacion';});
   return {lotes:lotes, centros:centros, otrosNombres:otrosNombres};
 }
 function _impFmt(n){ return (Math.round((Number(n)||0)*100)/100).toLocaleString('es-CL'); }
@@ -3635,6 +3648,8 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
   var iA=subDe(centrosAnt,'iva venta'), iN=subDe(nuevo.centros,'iva venta');
   if(iN[0]){ if(!iA[0]) dif.push({grupo:'Iva Venta', txt:'Centro de costo nuevo', tipo:'nuevo'}); comparar('Iva Venta', iA[0]&&iA[0].items, iN[0].items); }
   var uA=subDe(centrosAnt,'urbanizacion'), uN=subDe(nuevo.centros,'urbanizacion');
+  if(centrosAnt.some(function(c){return _claveCentro(c.nombre)==='urbanizacion';}) && !nuevo.centros.some(function(c){return _claveCentro(c.nombre)==='urbanizacion';}))
+    dif.push({grupo:'Urbanización', txt:'− Centro "Urbanización" (se reemplaza por los centros de urbanización de la planilla)', tipo:'quita'});
   uN.forEach(function(sn){
     var sa=uA.find(function(s){return _claveCentro(s.nombre)===_claveCentro(sn.nombre);});
     var itemsA=sa?sa.items:[];
@@ -3665,7 +3680,8 @@ function _impDiferencias(lotesAnt, centrosAnt, nuevo){
 function _impTotal(lotes, centros){
   var ing=lotes.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
   var cen=function(n){ var c=centros.find(function(x){return _claveCentro(x.nombre)===n;}); return c?calcCentro(c):0; };
-  return {ing:ing, terreno:cen('terreno'), urb:cen('urbanizacion'), ventas:cen('ventas'), iva:cen('iva venta')};
+  var urb=centros.filter(function(c){return _claveCentro(c.nombre).indexOf('urbanizacion')===0;}).reduce(function(a,c){return a+calcCentro(c);},0);
+  return {ing:ing, terreno:cen('terreno'), urb:urb, ventas:cen('ventas'), iva:cen('iva venta')};
 }
 async function _impPlanificar(wb){
   var hojas={};
