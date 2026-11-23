@@ -1987,7 +1987,7 @@ async function mostrarConsolidado(){
     var lotesE = _escalarLotes((lotesPorEtapa[e.id]||[]).map(_mapLoteRow), _sensFactores(e.id).ing);
     _m2PorEtapaCache[e.id] = lotesE.reduce(function(a,l){return a+l.unidades*l.m2;},0);
     var totE = lotesE.reduce(function(a,l){return a+calcLote(l).totalUF;},0);
-    consolidadoIngresos.push({etapaNombre:e.nombre, lotes:lotesE, total:totE, expandido:false});
+    consolidadoIngresos.push({etapaId:e.id, etapaNombre:e.nombre, lotes:lotesE, total:totE, expandido:false});
   }
 
   renderConsolidado();
@@ -2048,11 +2048,111 @@ function renderConsolidado(){
         <th style="text-align:left">Centro de costo</th><th>Total UF</th><th title="IVA 19 % o retención 15,25 % de honorarios; terreno exento">Impuesto</th><th>Total bruto</th><th>Costo real</th><th>Variación</th>
       </tr></thead>
       <tbody id="cons-cos-body"></tbody>
-    </table>`;
+    </table>
+    <div id="cons-flujo-wrap"></div>`;
 
   renderConsolidadoIngresos();
   renderConsolidadoCostos();
+  renderConsolidadoFlujo();
   _aplicarPlanoColapsado();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FLUJO DE PROYECTO Y APALANCAMIENTO BANCARIO (debajo de Partida 2)
+   · Flujo de proyecto = ingresos − costos totales brutos de Partida 2
+     (con su impuesto y el IVA neto de "Iva Venta").
+   · Impuesto a la renta: el del estado de resultados (ingresos netos −
+     costos netos) × TASA_IMPUESTO_RENTA, repartido por etapa.
+   · Flujo neto = flujo de proyecto − impuesto a la renta.
+   · Apalancamiento: lo que se pide al banco por etapa, con IVA, para
+     los centros de CENTROS_APALANCAMIENTO.
+   ═══════════════════════════════════════════════════════════════ */
+const CENTROS_APALANCAMIENTO = ['urbanizacion condominio','urbanizacion calle publica','imiv','imprevistos','gastos comunes','areas verdes'];
+
+function _calcFlujoConsolidado(){
+  var etapasOrd=[...etapas].sort(function(a,b){return (a.orden||0)-(b.orden||0);});
+  var cols=etapasOrd.map(function(e){
+    var ing=(consolidadoIngresos.find(function(x){return x.etapaId===e.id;})||{}).total||0;
+    var bruto=0, neto=0, debito=0, apal={};
+    consolidadoCostos.forEach(function(c){
+      var k=_claveCentro(c.nombre), tc=_impuestoDe(c.nombre);
+      c.porEtapa.forEach(function(pe){
+        if(pe.etapaId!==e.id) return;
+        var imp=_impMonto(pe.total, tc)||0;
+        bruto+=pe.total+imp;
+        if(k==='iva venta') debito+=_ivaDebitoDeCentro(pe.centro); else neto+=pe.total;
+        if(CENTROS_APALANCAMIENTO.indexOf(k)>=0){
+          apal[k]=apal[k]||{nombre:c.nombre, neto:0, bruto:0};
+          apal[k].neto+=pe.total; apal[k].bruto+=pe.total+imp;
+        }
+      });
+    });
+    gastosProyecto.forEach(function(g){
+      var m=_asignacionGastoProyecto(g, etapasOrd, _m2PorEtapaCache)[e.id]||0;
+      bruto+=m+(_impMonto(m, _impuestoDe('Gastos de Proyecto', g.nombre))||0); neto+=m;
+    });
+    return {id:e.id, nombre:String(e.nombre).split('·')[0].trim(), ing:ing, bruto:bruto, flujo:ing-bruto, rai:ing-debito-neto, apal:apal};
+  });
+  // Gastos de proyecto sin asignar a ninguna etapa: solo cuentan en el total
+  var gpTot=gastosProyecto.reduce(function(a,g){ var m=calcGastoProyecto(g); return a+m+(_impMonto(m, _impuestoDe('Gastos de Proyecto', g.nombre))||0); },0);
+  var gpNetoTot=gastosProyecto.reduce(function(a,g){return a+calcGastoProyecto(g);},0);
+  var gpAsig=0, gpNetoAsig=0;
+  gastosProyecto.forEach(function(g){ var asg=_asignacionGastoProyecto(g, etapasOrd, _m2PorEtapaCache); etapasOrd.forEach(function(e){ var m=asg[e.id]||0; gpNetoAsig+=m; gpAsig+=m+(_impMonto(m, _impuestoDe('Gastos de Proyecto', g.nombre))||0); }); });
+  var sinAsig={bruto:gpTot-gpAsig, neto:gpNetoTot-gpNetoAsig};
+  var sum=function(fn){ return cols.reduce(function(a,c){return a+fn(c);},0); };
+  var tot={ing:sum(function(c){return c.ing;}), bruto:sum(function(c){return c.bruto;})+sinAsig.bruto, rai:sum(function(c){return c.rai;})-sinAsig.neto};
+  tot.flujo=tot.ing-tot.bruto;
+  tot.renta=tot.rai>0 ? tot.rai*TASA_IMPUESTO_RENTA : 0;
+  cols.forEach(function(c){ c.renta=tot.rai>0 ? c.rai*TASA_IMPUESTO_RENTA : 0; c.neto=c.flujo-c.renta; });
+  tot.neto=tot.flujo-tot.renta;
+  return {cols:cols, tot:tot};
+}
+
+function renderConsolidadoFlujo(){
+  var wrap=document.getElementById('cons-flujo-wrap');
+  if(!wrap) return;
+  var F=_calcFlujoConsolidado(), cols=F.cols, tot=F.tot;
+  var tasaTxt=f1(TASA_IMPUESTO_RENTA*100).replace(/,0$/,'')+'%';
+  var colg='<colgroup><col style="width:40%">'+cols.map(function(){return '<col style="width:'+Math.floor(45/Math.max(cols.length,1))+'%">';}).join('')+'<col style="width:15%"></colgroup>';
+  var cab='<thead><tr><th style="text-align:left">Concepto</th>'+cols.map(function(c){return '<th>'+c.nombre+'</th>';}).join('')+'<th>Total</th></tr></thead>';
+  var fila=function(txt, fn, totV, cls, signo){
+    signo=signo||'';
+    return '<tr'+(cls?' class="'+cls+'"':'')+'><td>'+txt+'</td>'+cols.map(function(c){return '<td>'+signo+fval(fn(c))+'</td>';}).join('')+'<td style="font-weight:500">'+signo+fval(totV)+'</td></tr>';
+  };
+  // Apalancamiento: un renglón por centro, en el orden de CENTROS_APALANCAMIENTO
+  var claves=CENTROS_APALANCAMIENTO.filter(function(k){ return cols.some(function(c){return c.apal[k];}); });
+  var nom=function(k){ var c=cols.find(function(x){return x.apal[k];}); return c.apal[k].nombre; };
+  var apBruto=function(c){ return claves.reduce(function(a,k){return a+(c.apal[k]?c.apal[k].bruto:0);},0); };
+  var apNeto=function(c){ return claves.reduce(function(a,k){return a+(c.apal[k]?c.apal[k].neto:0);},0); };
+  var sumC=function(fn){ return cols.reduce(function(a,c){return a+fn(c);},0); };
+
+  wrap.innerHTML=`
+    <div class="section-hdr res">
+      <i class="ti ti-arrows-exchange" style="font-size:15px;color:#3B6D11"></i>
+      <span class="shdr-title res">Flujo de proyecto · Ingresos − costos de Partida 2</span>
+      <span class="shdr-badge res">Flujo</span>
+    </div>
+    <table class="ft res">${colg}${cab}<tbody>
+      ${fila('Ingresos (venta de sitios, con IVA)', function(c){return c.ing;}, tot.ing)}
+      ${fila('Costos totales Partida 2 (brutos)', function(c){return c.bruto;}, tot.bruto, '', '− ')}
+      ${fila('Flujo de proyecto', function(c){return c.flujo;}, tot.flujo, 'total-row')}
+      ${fila('Impuesto a la renta ('+tasaTxt+', según estado de resultados)', function(c){return c.renta;}, tot.renta, '', '− ')}
+      ${fila('Flujo neto', function(c){return c.neto;}, tot.neto, 'total-row')}
+    </tbody></table>
+
+    <div class="section-hdr ing">
+      <i class="ti ti-building-bank" style="font-size:15px;color:#185FA5"></i>
+      <span class="shdr-title ing">Apalancamiento bancario · Monto a solicitar al banco por etapa</span>
+      <span class="shdr-badge ing">Con IVA</span>
+    </div>
+    <table class="ft ing">${colg}${cab}<tbody>
+      ${claves.map(function(k){ return fila(nom(k), function(c){return c.apal[k]?c.apal[k].bruto:0;}, sumC(function(c){return c.apal[k]?c.apal[k].bruto:0;})); }).join('')}
+      ${fila('Monto a solicitar al banco', apBruto, sumC(apBruto), 'total-row')}
+      ${fila('De lo cual IVA (se recupera con el IVA débito de las ventas)', function(c){return apBruto(c)-apNeto(c);}, sumC(function(c){return apBruto(c)-apNeto(c);}))}
+    </tbody></table>
+    <div style="font-size:11px;color:var(--color-text-tertiary);line-height:1.6;margin-top:-0.5rem;margin-bottom:1.25rem">
+      Montos con IVA (19 %), porque las obras se pagan con factura. El monto de cada etapa se usa durante su obra; el IVA pagado vuelve como crédito fiscal contra el IVA de las ventas.
+    </div>`;
 }
 
 let consIngEtapasExpandido = false; // Partida 1 del Flujo de Proyecto: resumida por defecto
